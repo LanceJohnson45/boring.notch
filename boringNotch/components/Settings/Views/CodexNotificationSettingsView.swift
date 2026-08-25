@@ -7,6 +7,7 @@ struct CodexNotificationSettings: View {
     @State private var isInstalled = false
     @State private var hooksAreTrusted = false
     @State private var isOpenCodeInstalled = false
+    @State private var isZCodeInstalled = false
     @State private var isUpdating = false
     @State private var errorMessage: String?
 
@@ -65,6 +66,27 @@ struct CodexNotificationSettings: View {
                     .foregroundStyle(.secondary)
             } header: {
                 Text("OpenCode task notifications")
+            }
+
+            Section {
+                LabeledContent("Connection Status") {
+                    Label(
+                        isZCodeInstalled ? "Connected" : "Not connected",
+                        systemImage: isZCodeInstalled ? "checkmark.circle.fill" : "circle"
+                    )
+                    .foregroundStyle(isZCodeInstalled ? .green : .secondary)
+                }
+
+                Button(isZCodeInstalled ? "Disconnect ZCode" : "Connect or update ZCode") {
+                    updateZCodeInstallation(installed: !isZCodeInstalled)
+                }
+                .disabled(isUpdating)
+
+                Text("Shows ZCode task lifecycle states. Permission approval stays in ZCode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("ZCode task notifications")
             }
 
             Section("Notification types") {
@@ -141,6 +163,7 @@ struct CodexNotificationSettings: View {
             hooksAreTrusted = false
         }
         isOpenCodeInstalled = await XPCHelperClient.shared.isOpenCodeNotificationPluginInstalled()
+        isZCodeInstalled = await XPCHelperClient.shared.isZCodeNotificationHookInstalled()
     }
 
     private func updateInstallation(installed: Bool) {
@@ -176,6 +199,21 @@ struct CodexNotificationSettings: View {
         errorMessage = nil
         Task {
             let result = await XPCHelperClient.shared.setOpenCodeNotificationPluginInstalled(installed)
+            switch result {
+            case .success:
+                await refreshStatus()
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
+            isUpdating = false
+        }
+    }
+
+    private func updateZCodeInstallation(installed: Bool) {
+        isUpdating = true
+        errorMessage = nil
+        Task {
+            let result = await XPCHelperClient.shared.setZCodeNotificationHookInstalled(installed)
             switch result {
             case .success:
                 await refreshStatus()

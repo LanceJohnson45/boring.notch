@@ -519,4 +519,42 @@ final class XPCHelperClient: NSObject {
             return .failure(error)
         }
     }
+
+    @MainActor
+    func isZCodeNotificationHookInstalled() async -> Bool {
+        do {
+            let service = ensureRemoteService()
+            return try await service.withContinuation { service, continuation in
+                service.isZCodeNotificationHookInstalled { installed in
+                    continuation.resume(returning: installed)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    @MainActor
+    func setZCodeNotificationHookInstalled(
+        _ installed: Bool
+    ) async -> Result<Void, Error> {
+        do {
+            let service = ensureRemoteService()
+            let result: (Bool, String?) = try await service.withContinuation { service, continuation in
+                service.setZCodeNotificationHookInstalled(installed) { success, message in
+                    continuation.resume(returning: (success, message))
+                }
+            }
+            guard result.0 else {
+                throw NSError(
+                    domain: "BoringNotch.ZCodeHooks",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: result.1 ?? "ZCode notification hooks could not be updated."]
+                )
+            }
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
 }

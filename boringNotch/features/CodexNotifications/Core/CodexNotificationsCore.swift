@@ -445,11 +445,13 @@ public struct CodexJobNotification: Equatable, Identifiable, Sendable {
 public enum AgentTaskProvider: String, Equatable, Sendable {
     case codex
     case openCode
+    case zCode
 
     public var displayName: String {
         switch self {
         case .codex: "Codex"
         case .openCode: "OpenCode"
+        case .zCode: "ZCode"
         }
     }
 
@@ -457,11 +459,14 @@ public enum AgentTaskProvider: String, Equatable, Sendable {
         switch self {
         case .codex: "sparkles"
         case .openCode: "terminal.fill"
+        case .zCode: "z.circle.fill"
         }
     }
 
     public static func provider(for sessionID: String) -> Self {
-        sessionID.hasPrefix("opencode:") ? .openCode : .codex
+        if sessionID.hasPrefix("opencode:") { return .openCode }
+        if sessionID.hasPrefix("zcode:") { return .zCode }
+        return .codex
     }
 }
 

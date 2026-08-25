@@ -35,6 +35,7 @@ enum CodexNotificationExtension {
         let isPermissionRequest = notification.status == .needsAction(.permission)
         let tapRouting = CodexClosedActivityTapRouting(status: notification.status)
         let canOpenCodex = !notification.sessionID.hasPrefix("opencode:")
+            && !notification.sessionID.hasPrefix("zcode:")
         let metrics = ClosedNotchLayoutMetrics(
             exclusionWidth: notchWidth,
             leadingWidth: 0,
@@ -203,6 +204,7 @@ private struct CodexClosedNotchPrompt: View {
 
     private var canOpenCodex: Bool {
         !notification.sessionID.hasPrefix("opencode:")
+            && !notification.sessionID.hasPrefix("zcode:")
     }
 
     private var launchError: String? {
@@ -341,6 +343,7 @@ private struct AgentClosedIdleStatus: View {
         switch task.provider {
         case .codex: .cyan
         case .openCode: .mint
+        case .zCode: .orange
         }
     }
 }

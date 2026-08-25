@@ -382,6 +382,15 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     private static let codexHookSecretMarker = "boring-notch-notify.secret"
     private static let openCodePluginMarker = "boring-notch-notify.ts"
     private static let openCodePluginSecretMarker = "boring-notch-notify.secret"
+    private static let zCodeHookEvents = [
+        "UserPromptSubmit",
+        "PreToolUse",
+        "PostToolUse",
+        "PostToolUseFailure",
+        "Stop",
+    ]
+    private static let zCodeHookMarker = "boring-notch-notify.mjs"
+    private static let zCodeHookSecretMarker = "boring-notch-notify.secret"
     private static let codexNotificationScript = #"""
     import base64
     import ctypes
@@ -1183,13 +1192,242 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
       }
     }
     """#
+    private static let zCodeNotificationScript = #"""
+    import crypto from "node:crypto"
+    import fs from "node:fs"
+    import os from "node:os"
+    import path from "node:path"
+    import { spawn } from "node:child_process"
+
+    const MAX_PAYLOAD_BYTES = 256 * 1024
+    const MAX_TEXT_CHARACTERS = 16_000
+    const SECRET_PATH = path.join(os.homedir(), ".zcode", "cli", "boring-notch-notify.secret")
+    const STATE_PATH = path.join(os.homedir(), ".zcode", "cli", "boring-notch-notify.state.json")
+    const ACTIVE_STALE_MS = 60_000
+    const TERMINAL_COOLDOWN_MS = 2 * 60_000
+
+    function short(value, limit = MAX_TEXT_CHARACTERS) {
+      return typeof value === "string" ? value.slice(0, limit) : value
+    }
+
+    function base64url(buffer) {
+      return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
+    }
+
+    function readSecret() {
+      try {
+        const stat = fs.statSync(SECRET_PATH)
+        if (!stat.isFile() || stat.size !== 32 || (stat.mode & 0o777) !== 0o600) return undefined
+        const secret = fs.readFileSync(SECRET_PATH)
+        return secret.length === 32 ? secret : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    function openNotch(payload) {
+      const secret = readSecret()
+      if (!secret) return
+      payload.boring_notch_auth = {
+        timestamp: Date.now() / 1000,
+        nonce: crypto.randomBytes(16).toString("hex"),
+      }
+      const serialized = Buffer.from(JSON.stringify(payload), "utf8")
+      if (serialized.length > MAX_PAYLOAD_BYTES) return
+
+      const encoded = base64url(serialized)
+      const signature = base64url(crypto.createHmac("sha256", secret).update(encoded).digest())
+      const url = `boringnotch://codex-event?payload=${encoded}&signature=${signature}`
+      const child = spawn("/usr/bin/open", ["-g", "-b", "theboringteam.boringnotch", url], {
+        detached: true,
+        stdio: "ignore",
+      })
+      child.unref()
+    }
+
+    function valueAt(object, keys) {
+      for (const key of keys) {
+        const value = object?.[key]
+        if (typeof value === "string" && value.trim()) return value
+        if (typeof value === "number" && Number.isFinite(value)) return String(value)
+      }
+      return undefined
+    }
+
+    function readHookInput() {
+      return new Promise((resolve) => {
+        let raw = ""
+        process.stdin.setEncoding("utf8")
+        process.stdin.on("data", (chunk) => { raw += chunk })
+        process.stdin.on("end", () => {
+          try {
+            resolve(JSON.parse(raw || "{}"))
+          } catch {
+            resolve({})
+          }
+        })
+      })
+    }
+
+    function sessionIDFrom(event) {
+      return valueAt(event, ["session_id", "sessionID", "sessionId"]) ??
+        valueAt(event?.session, ["id", "session_id", "sessionID", "sessionId"])
+    }
+
+    function turnIDFrom(event) {
+      return valueAt(event, ["turn_id", "turnID", "turnId"])
+    }
+
+    function cwdFrom(event) {
+      return valueAt(event, ["cwd", "directory", "worktree"]) ?? process.cwd()
+    }
+
+    function projectName(cwd) {
+      const name = path.basename(cwd || "")
+      return name || "ZCode"
+    }
+
+    function boringNotchSessionID(sessionID) {
+      return `zcode:${sessionID}`
+    }
+
+    function sessionKey(event) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return undefined
+      return `${sessionID}:${turnIDFrom(event) ?? "session"}`
+    }
+
+    function readSharedState() {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"))
+        return parsed && typeof parsed === "object" ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+
+    function writeSharedState(state) {
+      try {
+        const tmp = `${STATE_PATH}.${process.pid}.tmp`
+        fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
+        fs.renameSync(tmp, STATE_PATH)
+      } catch {
+      }
+    }
+
+    function compactSharedState(state, now = Date.now()) {
+      for (const [key, entry] of Object.entries(state)) {
+        const updatedAt = typeof entry?.updatedAt === "number" ? entry.updatedAt : 0
+        if (now - updatedAt > 10 * 60_000) {
+          delete state[key]
+        }
+      }
+    }
+
+    function currentState(event) {
+      const key = sessionKey(event)
+      if (!key) return { key: undefined, local: undefined, sharedState: {} }
+      const sharedState = readSharedState()
+      compactSharedState(sharedState)
+      return { key, local: sharedState[key], sharedState }
+    }
+
+    function rememberState(state, key, value) {
+      state[key] = { value, updatedAt: Date.now() }
+      writeSharedState(state)
+    }
+
+    function suppressRunningAfterTerminal(entry) {
+      if (!entry || !["succeeded", "failed"].includes(entry.value)) return false
+      return Date.now() - entry.updatedAt < TERMINAL_COOLDOWN_MS
+    }
+
+    function promptFrom(event) {
+      return valueAt(event, ["prompt", "message", "text"]) ?? "ZCode task started."
+    }
+
+    function sendRunning(event, force = false) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const state = currentState(event)
+      if (!state.key) return
+      if (state.local?.value === "running") return
+      if (!force && suppressRunningAfterTerminal(state.local)) return
+      rememberState(state.sharedState, state.key, "running")
+
+      const cwd = cwdFrom(event)
+      openNotch({
+        hook_event_name: "UserPromptSubmit",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        prompt: short(promptFrom(event)),
+        chat_title: short("ZCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+    }
+
+    function touchRunning(event) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const state = currentState(event)
+      if (!state.key || state.local?.value !== "running") return
+      rememberState(state.sharedState, state.key, "running")
+      const cwd = cwdFrom(event)
+      openNotch({
+        hook_event_name: "PostToolUse",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        chat_title: short("ZCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+    }
+
+    function sendStop(event, failed = false, silent = false) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const terminalState = failed ? "failed" : "succeeded"
+      const state = currentState(event)
+      if (!state.key) return
+      if (state.local?.value === terminalState) return
+      rememberState(state.sharedState, state.key, terminalState)
+
+      const cwd = cwdFrom(event)
+      const summary = valueAt(event, ["last_assistant_message", "error", "message", "text"]) ??
+        (failed ? "ZCode stopped with an error." : "ZCode task completed.")
+      openNotch({
+        hook_event_name: "Stop",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        last_assistant_message: short(summary),
+        status: failed ? "failed" : "succeeded",
+        boring_notch_silent: silent,
+        chat_title: short("ZCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+    }
+
+    const event = await readHookInput()
+    const name = String(event?.hook_event_name ?? "")
+    if (name === "UserPromptSubmit") {
+      sendRunning(event, true)
+    } else if (name === "PreToolUse" || name === "PostToolUse") {
+      touchRunning(event)
+    } else if (name === "PostToolUseFailure") {
+      touchRunning(event)
+    } else if (name === "Stop") {
+      sendStop(event, false)
+    }
+    """#
 
     @objc func validateCodexNotificationPayload(
         _ payload: String,
         signature: String,
         with reply: @escaping (Bool) -> Void
     ) {
-        for secretURL in [codexHookURLs().secret, openCodePluginURLs().secret] {
+        for secretURL in [codexHookURLs().secret, openCodePluginURLs().secret, zCodeHookURLs().secret] {
             guard let secret = try? CodexHookSecretStore.load(at: secretURL) else {
                 continue
             }
@@ -1386,6 +1624,78 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
         }
     }
 
+    @objc func isZCodeNotificationHookInstalled(with reply: @escaping (Bool) -> Void) {
+        do {
+            let urls = zCodeHookURLs()
+            guard FileManager.default.fileExists(atPath: urls.script.path) else {
+                reply(false)
+                return
+            }
+            guard try CodexHookFileStore.load(at: urls.script)
+                == Data(Self.zCodeNotificationScript.utf8) else {
+                reply(false)
+                return
+            }
+            _ = try CodexHookSecretStore.load(at: urls.secret)
+            let root = try readZCodeHookConfiguration(at: urls.configuration)
+            guard let hooks = root["hooks"] as? [String: Any],
+                  hooks["enabled"] as? Bool == true else {
+                reply(false)
+                return
+            }
+            reply(Self.zCodeHookEvents.allSatisfy {
+                containsCurrentOwnedZCodeHook(
+                    in: root,
+                    event: $0,
+                    scriptURL: urls.script
+                )
+            })
+        } catch {
+            reply(false)
+        }
+    }
+
+    @objc func setZCodeNotificationHookInstalled(
+        _ installed: Bool,
+        with reply: @escaping (Bool, String?) -> Void
+    ) {
+        do {
+            let urls = zCodeHookURLs()
+            try FileManager.default.createDirectory(
+                at: urls.configuration.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try CodexHookFileStore.validateParent(of: urls.configuration)
+            let root = try Self.updatingZCodeHookConfiguration(
+                readZCodeHookConfiguration(at: urls.configuration),
+                installed: installed,
+                scriptURL: urls.script
+            )
+            let data = try JSONSerialization.data(
+                withJSONObject: root,
+                options: [.prettyPrinted, .sortedKeys]
+            )
+            if installed {
+                _ = try ensureCodexHookSecret(at: urls.secret)
+                try CodexHookFileStore.publish(
+                    Data(Self.zCodeNotificationScript.utf8),
+                    at: urls.script
+                )
+            }
+            try CodexHookFileStore.publish(data, at: urls.configuration)
+
+            if !installed {
+                for url in [urls.script, urls.secret, urls.state]
+                    where FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+            reply(true, nil)
+        } catch {
+            reply(false, error.localizedDescription)
+        }
+    }
+
     private func codexHookURLs() -> (
         configuration: URL,
         runtimeConfiguration: URL,
@@ -1531,6 +1841,18 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
         )
     }
 
+    private func zCodeHookURLs() -> (configuration: URL, script: URL, secret: URL, state: URL) {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".zcode", isDirectory: true)
+            .appendingPathComponent("cli", isDirectory: true)
+        return (
+            directory.appendingPathComponent("config.json"),
+            directory.appendingPathComponent(Self.zCodeHookMarker),
+            directory.appendingPathComponent(Self.zCodeHookSecretMarker),
+            directory.appendingPathComponent("boring-notch-notify.state.json")
+        )
+    }
+
     private func ensureCodexHookSecret(at url: URL) throws -> Data {
         try CodexHookSecretStore.loadOrCreate(at: url) {
             var bytes = [UInt8](repeating: 0, count: 32)
@@ -1641,6 +1963,143 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
         )
     }
 
+    private func readZCodeHookConfiguration(at url: URL) throws -> [String: Any] {
+        guard FileManager.default.fileExists(atPath: url.path) else { return [:] }
+        let object = try JSONSerialization.jsonObject(
+            with: CodexHookFileStore.load(at: url)
+        )
+        guard let root = object as? [String: Any] else {
+            throw Self.zCodeHookConfigurationError(
+                code: 1,
+                message: "ZCode config.json must contain a JSON object."
+            )
+        }
+        return root
+    }
+
+    private static func updatingZCodeHookConfiguration(
+        _ root: [String: Any],
+        installed: Bool,
+        scriptURL: URL
+    ) throws -> [String: Any] {
+        var updatedRoot = root
+        var hooks: [String: Any]
+        if let existingHooks = root["hooks"] {
+            guard let typedHooks = existingHooks as? [String: Any] else {
+                throw zCodeHookConfigurationError(
+                    code: 2,
+                    message: "ZCode config.json has an invalid hooks object."
+                )
+            }
+            hooks = typedHooks
+        } else {
+            hooks = [:]
+        }
+
+        var events: [String: Any]
+        if let existingEvents = hooks["events"] {
+            guard let typedEvents = existingEvents as? [String: Any] else {
+                throw zCodeHookConfigurationError(
+                    code: 3,
+                    message: "ZCode config.json has an invalid hooks.events object."
+                )
+            }
+            events = typedEvents
+        } else {
+            events = [:]
+        }
+
+        for event in zCodeHookEvents {
+            var groups: [[String: Any]]
+            if let existingGroups = events[event] {
+                guard let typedGroups = existingGroups as? [[String: Any]] else {
+                    throw zCodeHookConfigurationError(
+                        code: 4,
+                        message: "ZCode config.json has invalid \(event) hooks."
+                    )
+                }
+                groups = typedGroups
+            } else {
+                groups = []
+            }
+
+            groups = groups.compactMap { group in
+                guard let handlers = group["hooks"] as? [[String: Any]] else {
+                    return group
+                }
+                let remainingHandlers = handlers.filter {
+                    !isOwnedZCodeHookHandler($0, scriptURL: scriptURL)
+                }
+                guard remainingHandlers.count != handlers.count else {
+                    return group
+                }
+                guard !remainingHandlers.isEmpty else { return nil }
+
+                var updatedGroup = group
+                updatedGroup["hooks"] = remainingHandlers
+                return updatedGroup
+            }
+
+            if installed {
+                groups.append([
+                    "hooks": [zCodeHookHandler(scriptURL: scriptURL)]
+                ])
+            }
+            events[event] = groups
+        }
+
+        if installed {
+            hooks["enabled"] = true
+            hooks["timeoutMs"] = hooks["timeoutMs"] ?? 60_000
+            hooks["maxOutputBytes"] = hooks["maxOutputBytes"] ?? 32_768
+        }
+        hooks["events"] = events
+        updatedRoot["hooks"] = hooks
+        return updatedRoot
+    }
+
+    private func containsCurrentOwnedZCodeHook(
+        in root: [String: Any],
+        event: String,
+        scriptURL: URL
+    ) -> Bool {
+        guard let hooks = root["hooks"] as? [String: Any],
+              let events = hooks["events"] as? [String: Any],
+              let groups = events[event] as? [[String: Any]] else { return false }
+        let ownedGroups = groups.filter { group in
+            guard let handlers = group["hooks"] as? [[String: Any]] else { return false }
+            return handlers.contains {
+                Self.isOwnedZCodeHookHandler($0, scriptURL: scriptURL)
+            }
+        }
+        guard ownedGroups.count == 1,
+              let handlers = ownedGroups[0]["hooks"] as? [[String: Any]],
+              handlers.count == 1 else { return false }
+        return Self.isOwnedZCodeHookHandler(handlers[0], scriptURL: scriptURL)
+    }
+
+    private static func zCodeHookHandler(scriptURL: URL) -> [String: Any] {
+        [
+            "type": "process",
+            "command": "node",
+            "args": [scriptURL.path],
+            "timeoutMs": 5_000,
+            "statusMessage": "Updating Boring Notch",
+        ]
+    }
+
+    private static func isOwnedZCodeHookHandler(
+        _ handler: [String: Any],
+        scriptURL: URL
+    ) -> Bool {
+        guard handler["type"] as? String == "process",
+              handler["command"] as? String == "node",
+              let args = handler["args"] as? [String] else {
+            return false
+        }
+        return args == [scriptURL.path]
+    }
+
     private func codexHookCommand(scriptURL: URL) -> String {
         let quotedPath = scriptURL.path.replacingOccurrences(of: "'", with: "'\"'\"'")
         return "/usr/bin/python3 '\(quotedPath)'"
@@ -1649,6 +2108,14 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     private func codexHookConfigurationError(code: Int, message: String) -> NSError {
         NSError(
             domain: "BoringNotch.CodexHooks",
+            code: code,
+            userInfo: [NSLocalizedDescriptionKey: message]
+        )
+    }
+
+    private static func zCodeHookConfigurationError(code: Int, message: String) -> NSError {
+        NSError(
+            domain: "BoringNotch.ZCodeHooks",
             code: code,
             userInfo: [NSLocalizedDescriptionKey: message]
         )
