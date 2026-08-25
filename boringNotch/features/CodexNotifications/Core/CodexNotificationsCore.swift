@@ -126,11 +126,15 @@ public struct CodexClosedActivityAccessibility: Equatable, Sendable {
     public init(
         status: CodexJobStatus,
         projectName: String,
-        launchError: String? = nil
+        launchError: String? = nil,
+        canOpenCodex: Bool = true
     ) {
         if status == .needsAction(.permission) {
             value = "Permission required."
             hint = "Activate to review this permission in Boring Notch."
+        } else if !canOpenCodex {
+            value = "\(status.title). \(projectName)"
+            hint = "This notification is informational."
         } else if let launchError {
             value = launchError
             hint = "Activate to retry opening this task in Codex."
@@ -338,12 +342,14 @@ public struct CodexPermissionDetails: Equatable, Sendable {
 
 public enum CodexJobStatus: Equatable, Sendable {
     case needsAction(CodexRequiredAction)
+    case running
     case failed
     case succeeded
 
     public var priority: Int {
         switch self {
         case .needsAction: 4
+        case .running: 3
         case .failed: 3
         case .succeeded: 2
         }
@@ -352,7 +358,7 @@ public enum CodexJobStatus: Equatable, Sendable {
     public var isPersistent: Bool {
         switch self {
         case .needsAction(.permission): true
-        case .needsAction(.decision), .needsAction(.manualCheck), .failed, .succeeded:
+        case .running, .needsAction(.decision), .needsAction(.manualCheck), .failed, .succeeded:
             false
         }
     }
@@ -362,6 +368,7 @@ public enum CodexJobStatus: Equatable, Sendable {
         case .needsAction(.permission): "Permission Required"
         case .needsAction(.decision): "Decision Required"
         case .needsAction(.manualCheck): "Manual Check"
+        case .running: "Working"
         case .failed: "Failure"
         case .succeeded: "Success"
         }
@@ -372,6 +379,7 @@ public enum CodexJobStatus: Equatable, Sendable {
         case .needsAction(.permission): "lock.shield.fill"
         case .needsAction(.decision): "questionmark.circle.fill"
         case .needsAction(.manualCheck): "hand.tap.fill"
+        case .running: "sparkles"
         case .failed: "xmark.circle.fill"
         case .succeeded: "checkmark.circle.fill"
         }
@@ -381,6 +389,7 @@ public enum CodexJobStatus: Equatable, Sendable {
         switch self {
         case .needsAction(.permission), .needsAction(.decision):
             "Open Codex"
+        case .running: "Task is running"
         case .needsAction(.manualCheck), .failed: "Review result"
         case .succeeded: "No action needed"
         }
@@ -433,6 +442,51 @@ public struct CodexJobNotification: Equatable, Identifiable, Sendable {
     }
 }
 
+public enum AgentTaskProvider: String, Equatable, Sendable {
+    case codex
+    case openCode
+
+    public var displayName: String {
+        switch self {
+        case .codex: "Codex"
+        case .openCode: "OpenCode"
+        }
+    }
+
+    public var icon: String {
+        switch self {
+        case .codex: "sparkles"
+        case .openCode: "terminal.fill"
+        }
+    }
+
+    public static func provider(for sessionID: String) -> Self {
+        sessionID.hasPrefix("opencode:") ? .openCode : .codex
+    }
+}
+
+public struct AgentTaskRecord: Equatable, Identifiable, Sendable {
+    public let id: String
+    public let sessionID: String
+    public let turnID: String?
+    public let title: String
+    public let projectName: String
+    public let status: CodexJobStatus
+    public let provider: AgentTaskProvider
+    public let updatedAt: Date
+
+    public init(notification: CodexJobNotification) {
+        id = notification.id
+        sessionID = notification.sessionID
+        turnID = notification.turnID
+        title = notification.jobTitle
+        projectName = notification.projectName
+        status = notification.status
+        provider = AgentTaskProvider.provider(for: notification.sessionID)
+        updatedAt = notification.createdAt
+    }
+}
+
 public enum CodexHookEvent: Equatable, Sendable {
     case userPrompt(
         sessionID: String,
@@ -466,7 +520,8 @@ public enum CodexHookEvent: Equatable, Sendable {
         result: String,
         reportedStatus: String? = nil,
         chatTitle: String? = nil,
-        projectName: String? = nil
+        projectName: String? = nil,
+        silent: Bool = false
     )
 }
 
@@ -564,7 +619,8 @@ public enum CodexHookEventParser {
                     ?? "Codex stopped before completing the task.",
                 reportedStatus: nonemptyString(object["status"]),
                 chatTitle: chatTitle,
-                projectName: projectName
+                projectName: projectName,
+                silent: object["boring_notch_silent"] as? Bool ?? false
             )
 
         default:
@@ -687,13 +743,18 @@ public struct CodexNotificationState: Equatable, Sendable {
 
     private var latestJobBySession: [String: JobContext]
     private var recentJobSessionIDs: [String]
+    private var presentedRunningNotificationIDs: Set<String>
+    private var recentRunningNotificationIDs: [String]
     private let maximumNotifications = 20
     private let maximumJobContexts = 20
+    private let maximumRunningHistory = 50
 
     public init(notifications: [CodexJobNotification] = []) {
         self.notifications = notifications
         latestJobBySession = [:]
         recentJobSessionIDs = []
+        presentedRunningNotificationIDs = []
+        recentRunningNotificationIDs = []
     }
 
     public mutating func reduce(_ event: CodexHookEvent, at date: Date = Date()) {
@@ -716,6 +777,22 @@ public struct CodexNotificationState: Equatable, Sendable {
                     ?? CodexText.short(userInstruction, limit: 84),
                 projectName: projectName ?? Self.projectName(cwd: cwd)
             ), for: sessionID)
+            let notification = makeNotification(
+                sessionID: sessionID,
+                turnID: turnID,
+                requestID: nil,
+                cwd: cwd,
+                result: "Working on your request.",
+                status: .running,
+                chatTitle: chatTitle,
+                projectName: projectName,
+                date: date
+            )
+            guard !presentedRunningNotificationIDs.contains(notification.id) else {
+                return
+            }
+            upsert(notification)
+            markRunningNotificationPresented(notification.id)
 
         case .permissionRequest(
             let sessionID,
@@ -728,6 +805,7 @@ public struct CodexNotificationState: Equatable, Sendable {
             let projectName
         ):
             guard !details.isAutoReviewed else { return }
+            removeRunningNotification(sessionID: sessionID, turnID: turnID)
             let notification = makeNotification(
                 sessionID: sessionID,
                 turnID: turnID,
@@ -755,7 +833,8 @@ public struct CodexNotificationState: Equatable, Sendable {
             let result,
             let reportedStatus,
             let chatTitle,
-            let projectName
+            let projectName,
+            let silent
         ):
             notifications.removeAll { notification in
                 guard notification.status == .needsAction(.permission),
@@ -764,6 +843,16 @@ public struct CodexNotificationState: Equatable, Sendable {
                 }
                 guard let turnID else { return true }
                 return notification.turnID == turnID
+            }
+            if silent {
+                removeRunningNotification(sessionID: sessionID, turnID: turnID)
+                let id = Self.correlationID(
+                    sessionID: sessionID,
+                    turnID: turnID,
+                    requestID: nil
+                )
+                forgetRunningNotification(id)
+                return
             }
             let status = Self.classify(result: result, reportedStatus: reportedStatus)
             let notification = makeNotification(
@@ -778,6 +867,7 @@ public struct CodexNotificationState: Equatable, Sendable {
                 date: date
             )
             upsert(notification)
+            forgetRunningNotification(notification.id)
         }
     }
 
@@ -885,6 +975,35 @@ public struct CodexNotificationState: Equatable, Sendable {
             }
             notifications.remove(at: evictionIndex)
         }
+    }
+
+    private mutating func removeRunningNotification(
+        sessionID: String,
+        turnID: String?
+    ) {
+        notifications.removeAll { notification in
+            guard notification.status == .running,
+                  notification.sessionID == sessionID else {
+                return false
+            }
+            guard let turnID else { return true }
+            return notification.turnID == turnID
+        }
+    }
+
+    private mutating func markRunningNotificationPresented(_ id: String) {
+        guard !presentedRunningNotificationIDs.contains(id) else { return }
+        presentedRunningNotificationIDs.insert(id)
+        recentRunningNotificationIDs.append(id)
+        while recentRunningNotificationIDs.count > maximumRunningHistory {
+            let evictedID = recentRunningNotificationIDs.removeFirst()
+            presentedRunningNotificationIDs.remove(evictedID)
+        }
+    }
+
+    private mutating func forgetRunningNotification(_ id: String) {
+        presentedRunningNotificationIDs.remove(id)
+        recentRunningNotificationIDs.removeAll { $0 == id }
     }
 
     private mutating func storeJobContext(

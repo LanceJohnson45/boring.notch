@@ -202,6 +202,7 @@ final class CodexNotificationsCoreTests: XCTestCase {
     }
 
     func testStatusIconsMatchNotchNotificationGlyphs() {
+        XCTAssertEqual(CodexJobStatus.running.icon, "sparkles")
         XCTAssertEqual(CodexJobStatus.succeeded.icon, "checkmark.circle.fill")
         XCTAssertEqual(CodexJobStatus.failed.icon, "xmark.circle.fill")
         XCTAssertEqual(CodexJobStatus.needsAction(.permission).icon, "lock.shield.fill")
@@ -272,6 +273,7 @@ final class CodexNotificationsCoreTests: XCTestCase {
         """#))
 
         let notice = try XCTUnwrap(state.visibleNotification())
+        XCTAssertEqual(state.notifications.filter { $0.status == .running }.count, 0)
         XCTAssertEqual(notice.jobTitle, "Fix the extension conflict in PR #970")
         XCTAssertEqual(notice.chatTitle, "Fix Codex permission relay")
         XCTAssertEqual(notice.userPrompt, "Fix the extension conflict in PR #970")
@@ -693,6 +695,98 @@ final class CodexNotificationsCoreTests: XCTestCase {
         XCTAssertEqual(notice.status, .succeeded)
     }
 
+    func testUserPromptPresentsRunningNotificationImmediately() throws {
+        var state = CodexNotificationState()
+        let startedAt = Date(timeIntervalSince1970: 10)
+
+        state.reduce(.userPrompt(
+            sessionID: "running-session",
+            turnID: "turn-1",
+            cwd: "/tmp/boring.notch",
+            prompt: "Wire task progress into the notch",
+            chatTitle: "Progress UI",
+            projectName: "Boring Notch"
+        ), at: startedAt)
+
+        let notice = try XCTUnwrap(state.visibleNotification())
+        XCTAssertEqual(notice.status, .running)
+        XCTAssertEqual(notice.status.title, "Working")
+        XCTAssertEqual(notice.resultSummary, "Working on your request.")
+        XCTAssertEqual(notice.jobTitle, "Wire task progress into the notch")
+        XCTAssertEqual(notice.chatTitle, "Progress UI")
+        XCTAssertEqual(notice.projectName, "Boring Notch")
+        XCTAssertEqual(notice.createdAt, startedAt)
+        XCTAssertFalse(CodexJobStatus.running.isPersistent)
+    }
+
+    func testStopReplacesRunningNotificationForSameTurn() throws {
+        var state = CodexNotificationState()
+        state.reduce(.userPrompt(
+            sessionID: "running-session",
+            turnID: "turn-1",
+            cwd: "/tmp/boring.notch",
+            prompt: "Run tests"
+        ), at: Date(timeIntervalSince1970: 10))
+
+        XCTAssertEqual(state.visibleNotification()?.status, .running)
+
+        state.reduce(.stop(
+            sessionID: "running-session",
+            turnID: "turn-1",
+            cwd: "/tmp/boring.notch",
+            result: "Tests passed.",
+            reportedStatus: "succeeded"
+        ), at: Date(timeIntervalSince1970: 20))
+
+        XCTAssertEqual(state.notifications.count, 1)
+        let notice = try XCTUnwrap(state.visibleNotification())
+        XCTAssertEqual(notice.status, .succeeded)
+        XCTAssertEqual(notice.resultSummary, "Tests passed.")
+    }
+
+    func testRepeatedRunningEventsDoNotResurfaceSameTurn() throws {
+        var state = CodexNotificationState()
+        state.reduce(.userPrompt(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch",
+            prompt: "Run a long OpenCode task"
+        ), at: Date(timeIntervalSince1970: 10))
+
+        let first = try XCTUnwrap(state.visibleNotification())
+        state.dismiss(first.id)
+
+        state.reduce(.userPrompt(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch",
+            prompt: "Run a long OpenCode task"
+        ), at: Date(timeIntervalSince1970: 20))
+
+        XCTAssertNil(state.visibleNotification())
+        XCTAssertTrue(state.notifications.isEmpty)
+
+        state.reduce(.stop(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch",
+            result: "OpenCode task completed.",
+            reportedStatus: "succeeded"
+        ), at: Date(timeIntervalSince1970: 30))
+        XCTAssertEqual(state.visibleNotification()?.status, .succeeded)
+
+        let completion = try XCTUnwrap(state.visibleNotification())
+        state.dismiss(completion.id)
+        state.reduce(.userPrompt(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch",
+            prompt: "Run another OpenCode task"
+        ), at: Date(timeIntervalSince1970: 40))
+
+        XCTAssertEqual(state.visibleNotification()?.status, .running)
+    }
+
     func testInterruptedStopIsClassifiedAsFailure() throws {
         var state = CodexNotificationState()
         state.reduce(try CodexHookEventParser.parse(#"""
@@ -741,10 +835,12 @@ final class CodexNotificationsCoreTests: XCTestCase {
         XCTAssertEqual(notice?.status, .failed)
 
         XCTAssertTrue(CodexJobStatus.needsAction(.permission).isPersistent)
+        XCTAssertFalse(CodexJobStatus.running.isPersistent)
         XCTAssertFalse(CodexJobStatus.needsAction(.decision).isPersistent)
         XCTAssertFalse(CodexJobStatus.needsAction(.manualCheck).isPersistent)
         XCTAssertFalse(CodexJobStatus.failed.isPersistent)
         XCTAssertFalse(CodexJobStatus.succeeded.isPersistent)
+        XCTAssertEqual(CodexJobStatus.running.title, "Working")
         XCTAssertEqual(CodexJobStatus.failed.title, "Failure")
         XCTAssertEqual(CodexJobStatus.succeeded.title, "Success")
     }
@@ -1554,7 +1650,9 @@ final class CodexNotificationsCoreTests: XCTestCase {
             reportedStatus: "succeeded"
         ))
 
-        let notification = try XCTUnwrap(state.visibleNotification())
+        let notification = try XCTUnwrap(
+            state.notifications.first { $0.sessionID == "correlated-session" }
+        )
         XCTAssertEqual(notification.userPrompt, "Keep this prompt through the terminal event")
         XCTAssertEqual(notification.status, .succeeded)
     }

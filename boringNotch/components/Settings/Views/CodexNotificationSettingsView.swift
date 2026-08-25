@@ -1,8 +1,12 @@
+import Defaults
 import SwiftUI
 
 struct CodexNotificationSettings: View {
+    @Default(.agentIdlePriority) private var agentIdlePriority
+
     @State private var isInstalled = false
     @State private var hooksAreTrusted = false
+    @State private var isOpenCodeInstalled = false
     @State private var isUpdating = false
     @State private var errorMessage: String?
 
@@ -42,7 +46,33 @@ struct CodexNotificationSettings: View {
                 Text("Codex task notifications")
             }
 
+            Section {
+                LabeledContent("Connection Status") {
+                    Label(
+                        isOpenCodeInstalled ? "Connected" : "Not connected",
+                        systemImage: isOpenCodeInstalled ? "checkmark.circle.fill" : "circle"
+                    )
+                    .foregroundStyle(isOpenCodeInstalled ? .green : .secondary)
+                }
+
+                Button(isOpenCodeInstalled ? "Disconnect OpenCode" : "Connect or update OpenCode") {
+                    updateOpenCodeInstallation(installed: !isOpenCodeInstalled)
+                }
+                .disabled(isUpdating)
+
+                Text("Shows OpenCode task completion and failure states. Permission approval stays in OpenCode.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("OpenCode task notifications")
+            }
+
             Section("Notification types") {
+                CodexNotificationTypeRow(
+                    title: "Working",
+                    detail: "The task is currently running.",
+                    icon: .system(CodexJobStatus.running.icon)
+                )
                 CodexNotificationTypeRow(
                     title: "Success",
                     detail: "The task completed successfully.",
@@ -68,6 +98,20 @@ struct CodexNotificationSettings: View {
                     detail: "A result needs you to inspect or approve it.",
                     icon: .system(CodexJobStatus.needsAction(.manualCheck).icon)
                 )
+            }
+
+            Section {
+                Picker("Agent idle priority", selection: $agentIdlePriority) {
+                    ForEach(AgentIdlePriority.allCases) { priority in
+                        Text(priority.localizedString).tag(priority)
+                    }
+                }
+
+                Text("Controls when a running agent can appear in the closed idle notch after its notify animation ends.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            } header: {
+                Text("Idle state")
             }
 
             if let errorMessage {
@@ -96,6 +140,7 @@ struct CodexNotificationSettings: View {
         } else {
             hooksAreTrusted = false
         }
+        isOpenCodeInstalled = await XPCHelperClient.shared.isOpenCodeNotificationPluginInstalled()
     }
 
     private func updateInstallation(installed: Bool) {
@@ -123,6 +168,21 @@ struct CodexNotificationSettings: View {
                 return
             }
             errorMessage = nil
+        }
+    }
+
+    private func updateOpenCodeInstallation(installed: Bool) {
+        isUpdating = true
+        errorMessage = nil
+        Task {
+            let result = await XPCHelperClient.shared.setOpenCodeNotificationPluginInstalled(installed)
+            switch result {
+            case .success:
+                await refreshStatus()
+            case .failure(let error):
+                errorMessage = error.localizedDescription
+            }
+            isUpdating = false
         }
     }
 }

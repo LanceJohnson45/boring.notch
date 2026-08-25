@@ -68,6 +68,9 @@ final class BNLunarBrightnessEvent: NSObject, NSSecureCoding {
     func isCodexNotificationHookInstalled(with reply: @escaping (Bool) -> Void)
     func areCodexNotificationHooksTrusted(with reply: @escaping (Bool) -> Void)
     func setCodexNotificationHookInstalled(_ installed: Bool, with reply: @escaping (Bool, String?) -> Void)
+    // OpenCode notification plugin configuration (performed by the unsandboxed helper)
+    func isOpenCodeNotificationPluginInstalled(with reply: @escaping (Bool) -> Void)
+    func setOpenCodeNotificationPluginInstalled(_ installed: Bool, with reply: @escaping (Bool, String?) -> Void)
 }
 
 /*

@@ -21,6 +21,26 @@ public enum NotchState {
 public enum NotchViews: Hashable {
     case home
     case shelf
+    case agent
+}
+
+enum AgentIdlePriority: String, CaseIterable, Identifiable, Defaults.Serializable {
+    case low
+    case normal
+    case high
+
+    var id: String { rawValue }
+
+    var localizedString: String {
+        switch self {
+        case .low:
+            return "Low"
+        case .normal:
+            return "Normal"
+        case .high:
+            return "High"
+        }
+    }
 }
 
 enum DownloadIndicatorStyle: String, Defaults.Serializable {

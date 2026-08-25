@@ -481,4 +481,42 @@ final class XPCHelperClient: NSObject {
             return .failure(error)
         }
     }
+
+    @MainActor
+    func isOpenCodeNotificationPluginInstalled() async -> Bool {
+        do {
+            let service = ensureRemoteService()
+            return try await service.withContinuation { service, continuation in
+                service.isOpenCodeNotificationPluginInstalled { installed in
+                    continuation.resume(returning: installed)
+                }
+            }
+        } catch {
+            return false
+        }
+    }
+
+    @MainActor
+    func setOpenCodeNotificationPluginInstalled(
+        _ installed: Bool
+    ) async -> Result<Void, Error> {
+        do {
+            let service = ensureRemoteService()
+            let result: (Bool, String?) = try await service.withContinuation { service, continuation in
+                service.setOpenCodeNotificationPluginInstalled(installed) { success, message in
+                    continuation.resume(returning: (success, message))
+                }
+            }
+            guard result.0 else {
+                throw NSError(
+                    domain: "BoringNotch.OpenCodePlugin",
+                    code: 1,
+                    userInfo: [NSLocalizedDescriptionKey: result.1 ?? "OpenCode notification plugin could not be updated."]
+                )
+            }
+            return .success(())
+        } catch {
+            return .failure(error)
+        }
+    }
 }

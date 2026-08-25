@@ -167,7 +167,7 @@ struct ClosedNotchRenderSnapshot {
               let activity = extensionActivities[id] else {
             return nil
         }
-        return activity.opensNotchOnHover
+        return activity.opensNotchOnHover ? true : nil
     }
 
     var opensNotchOnTap: Bool {

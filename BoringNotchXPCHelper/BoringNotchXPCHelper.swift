@@ -380,6 +380,8 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     ]
     private static let codexHookMarker = "boring-notch-notify.py"
     private static let codexHookSecretMarker = "boring-notch-notify.secret"
+    private static let openCodePluginMarker = "boring-notch-notify.ts"
+    private static let openCodePluginSecretMarker = "boring-notch-notify.secret"
     private static let codexNotificationScript = #"""
     import base64
     import ctypes
@@ -849,14 +851,348 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
     except Exception:
         print("{}")
     """#
+    private static let openCodeNotificationPlugin = #"""
+    import crypto from "node:crypto"
+    import fs from "node:fs"
+    import os from "node:os"
+    import path from "node:path"
+    import { spawn } from "node:child_process"
+
+    const MAX_PAYLOAD_BYTES = 256 * 1024
+    const MAX_TEXT_CHARACTERS = 16_000
+    const SECRET_PATH = path.join(os.homedir(), ".config", "opencode", "plugins", "boring-notch-notify.secret")
+    const STATE_PATH = path.join(os.homedir(), ".config", "opencode", "plugins", "boring-notch-notify.state.json")
+    const TERMINAL_COOLDOWN_MS = 2 * 60_000
+    const ACTIVE_STALE_MS = 60_000
+    const sessionStates = new Map()
+    const idleTimers = new Map()
+
+    function short(value, limit = MAX_TEXT_CHARACTERS) {
+      return typeof value === "string" ? value.slice(0, limit) : value
+    }
+
+    function base64url(buffer) {
+      return Buffer.from(buffer).toString("base64").replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/g, "")
+    }
+
+    function readSecret() {
+      try {
+        const stat = fs.statSync(SECRET_PATH)
+        if (!stat.isFile() || stat.size !== 32 || (stat.mode & 0o777) !== 0o600) return undefined
+        const secret = fs.readFileSync(SECRET_PATH)
+        return secret.length === 32 ? secret : undefined
+      } catch {
+        return undefined
+      }
+    }
+
+    function openNotch(payload) {
+      const secret = readSecret()
+      if (!secret) return
+      payload.boring_notch_auth = {
+        timestamp: Date.now() / 1000,
+        nonce: crypto.randomBytes(16).toString("hex"),
+      }
+      const serialized = Buffer.from(JSON.stringify(payload), "utf8")
+      if (serialized.length > MAX_PAYLOAD_BYTES) return
+
+      const encoded = base64url(serialized)
+      const signature = base64url(crypto.createHmac("sha256", secret).update(encoded).digest())
+      const url = `boringnotch://codex-event?payload=${encoded}&signature=${signature}`
+      const child = spawn("/usr/bin/open", ["-g", "-b", "theboringteam.boringnotch", url], {
+        detached: true,
+        stdio: "ignore",
+      })
+      child.unref()
+    }
+
+    function valueAt(object, keys) {
+      for (const key of keys) {
+        const value = object?.[key]
+        if (typeof value === "string" && value.trim()) return value
+        if (typeof value === "number" && Number.isFinite(value)) return String(value)
+      }
+      return undefined
+    }
+
+    function sessionIDFrom(event) {
+      return valueAt(event, ["sessionID", "sessionId", "session_id"]) ??
+        valueAt(event?.session, ["id", "sessionID", "sessionId", "session_id"]) ??
+        valueAt(event?.properties, ["sessionID", "sessionId", "session_id"]) ??
+        valueAt(event?.data, ["sessionID", "sessionId", "session_id"]) ??
+        valueAt(event?.properties?.session, ["id", "sessionID", "sessionId", "session_id"]) ??
+        valueAt(event?.data?.session, ["id", "sessionID", "sessionId", "session_id"])
+    }
+
+    function turnIDFrom(event) {
+      return valueAt(event, ["turnID", "turnId", "messageID", "messageId", "nextID", "nextId"]) ??
+        valueAt(event?.properties, ["turnID", "turnId", "messageID", "messageId", "nextID", "nextId"]) ??
+        valueAt(event?.data, ["turnID", "turnId", "messageID", "messageId", "nextID", "nextId"]) ??
+        valueAt(event?.next, ["id", "turnID", "turnId", "messageID", "messageId"]) ??
+        valueAt(event?.properties?.next, ["id", "turnID", "turnId", "messageID", "messageId"]) ??
+        valueAt(event?.data?.next, ["id", "turnID", "turnId", "messageID", "messageId"])
+    }
+
+    function cwdFrom(event, ctx) {
+      return valueAt(event, ["cwd", "directory", "worktree"]) ??
+        valueAt(event?.session, ["cwd", "directory", "worktree"]) ??
+        valueAt(event?.properties, ["cwd", "directory", "worktree"]) ??
+        valueAt(event?.data, ["cwd", "directory", "worktree"]) ??
+        valueAt(ctx, ["directory", "worktree"]) ??
+        process.cwd()
+    }
+
+    function chatTitleFrom(event) {
+      return valueAt(event, ["title", "name"]) ??
+        valueAt(event?.session, ["title", "name"]) ??
+        valueAt(event?.properties, ["title", "name"]) ??
+        valueAt(event?.data, ["title", "name"])
+    }
+
+    function promptFromContext(event) {
+      const messages = Array.isArray(event?.messages) ? event.messages : []
+      const lastUserMessage = [...messages].reverse().find((message) => {
+        return message?.role === "user" || message?.info?.role === "user"
+      })
+      const content = lastUserMessage?.content ?? lastUserMessage?.parts ?? lastUserMessage?.text
+      if (typeof content === "string") return content
+      if (Array.isArray(content)) {
+        return content.map((part) => part?.text ?? part?.content ?? "").filter(Boolean).join("\n")
+      }
+      return valueAt(event, ["prompt", "text", "message", "title"]) ??
+        valueAt(event?.properties, ["prompt", "text", "message", "title"]) ??
+        valueAt(event?.data, ["prompt", "text", "message", "title"])
+    }
+
+    function projectName(cwd) {
+      const name = path.basename(cwd || "")
+      return name || "OpenCode"
+    }
+
+    function boringNotchSessionID(sessionID) {
+      return `opencode:${sessionID}`
+    }
+
+    function sessionKey(event) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return undefined
+      return `${sessionID}:${turnIDFrom(event) ?? "session"}`
+    }
+
+    function readSharedState() {
+      try {
+        const parsed = JSON.parse(fs.readFileSync(STATE_PATH, "utf8"))
+        return parsed && typeof parsed === "object" ? parsed : {}
+      } catch {
+        return {}
+      }
+    }
+
+    function writeSharedState(state) {
+      try {
+        const tmp = `${STATE_PATH}.${process.pid}.tmp`
+        fs.writeFileSync(tmp, JSON.stringify(state), { mode: 0o600 })
+        fs.renameSync(tmp, STATE_PATH)
+      } catch {
+      }
+    }
+
+    function compactSharedState(state, now = Date.now()) {
+      for (const [key, entry] of Object.entries(state)) {
+        const updatedAt = typeof entry?.updatedAt === "number" ? entry.updatedAt : 0
+        if (now - updatedAt > 10 * 60_000) {
+          delete state[key]
+        }
+      }
+    }
+
+    function currentState(event) {
+      const key = sessionKey(event)
+      if (!key) return { key: undefined, local: undefined, shared: undefined }
+      const sharedState = readSharedState()
+      compactSharedState(sharedState)
+      return {
+        key,
+        local: sessionStates.get(key),
+        shared: sharedState[key],
+        sharedState,
+      }
+    }
+
+    function rememberState(state, key, value) {
+      const entry = { value, updatedAt: Date.now() }
+      sessionStates.set(key, entry)
+      state[key] = entry
+      writeSharedState(state)
+    }
+
+    function clearIdleTimer(key) {
+      const timer = idleTimers.get(key)
+      if (timer) clearTimeout(timer)
+      idleTimers.delete(key)
+    }
+
+    function scheduleIdleFallback(event, ctx, key) {
+      clearIdleTimer(key)
+      const timer = setTimeout(() => {
+        const latest = sessionStates.get(key)
+        if (latest?.value !== "running") return
+        if (Date.now() - latest.updatedAt < ACTIVE_STALE_MS) {
+          scheduleIdleFallback(event, ctx, key)
+          return
+        }
+        sendStop(event, ctx, false, true)
+      }, ACTIVE_STALE_MS + 250)
+      idleTimers.set(key, timer)
+    }
+
+    function suppressRunningAfterTerminal(entry) {
+      if (!entry || !["succeeded", "failed"].includes(entry.value)) return false
+      return Date.now() - entry.updatedAt < TERMINAL_COOLDOWN_MS
+    }
+
+    function touchRunning(event, ctx) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const state = currentState(event)
+      if (!state.key) return
+      if (state.local?.value !== "running" && state.shared?.value !== "running") return
+      rememberState(state.sharedState, state.key, "running")
+      scheduleIdleFallback(event, ctx, state.key)
+    }
+
+    function sendRunning(event, ctx, force = false) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const state = currentState(event)
+      if (!state.key) return
+      if (state.local?.value === "running" || state.shared?.value === "running") return
+      if (!force && (suppressRunningAfterTerminal(state.local) || suppressRunningAfterTerminal(state.shared))) return
+      rememberState(state.sharedState, state.key, "running")
+      scheduleIdleFallback(event, ctx, state.key)
+
+      const cwd = cwdFrom(event, ctx)
+      const prompt = promptFromContext(event) ?? "OpenCode task started."
+      openNotch({
+        hook_event_name: "UserPromptSubmit",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        prompt: short(prompt),
+        chat_title: short(chatTitleFrom(event) ?? "OpenCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+    }
+
+    function sendToolCompleted(event, ctx) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const cwd = cwdFrom(event, ctx)
+      openNotch({
+        hook_event_name: "PostToolUse",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        chat_title: short(chatTitleFrom(event) ?? "OpenCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+    }
+
+    function sendStop(event, ctx, failed = false, silent = false) {
+      const sessionID = sessionIDFrom(event)
+      if (!sessionID) return
+      const terminalState = failed ? "failed" : "succeeded"
+      const state = currentState(event)
+      if (!state.key) return
+      if (state.local?.value === terminalState || state.shared?.value === terminalState) return
+      rememberState(state.sharedState, state.key, terminalState)
+      clearIdleTimer(state.key)
+
+      const cwd = cwdFrom(event, ctx)
+      const summary = valueAt(event, ["summary", "message", "error", "text"]) ??
+        valueAt(event?.data, ["summary", "message", "error", "text"]) ??
+        (failed ? "OpenCode stopped with an error." : "OpenCode task completed.")
+      openNotch({
+        hook_event_name: "Stop",
+        session_id: short(boringNotchSessionID(sessionID), 240),
+        turn_id: short(turnIDFrom(event), 240),
+        cwd: short(cwd, 4096),
+        last_assistant_message: short(summary),
+        status: failed ? "failed" : "succeeded",
+        boring_notch_silent: silent,
+        chat_title: short(chatTitleFrom(event) ?? "OpenCode task", 240),
+        project_name: short(projectName(cwd), 240),
+      })
+      setTimeout(() => {
+        const latest = sessionStates.get(state.key)
+        if (latest?.value === terminalState) {
+          sessionStates.delete(state.key)
+        }
+      }, 60_000)
+    }
+
+    function statusFrom(event) {
+      const value = event?.status ?? event?.state ??
+        event?.properties?.status ?? event?.properties?.state ??
+        event?.data?.status ?? event?.data?.state
+      if (typeof value === "string") return value.toLowerCase()
+      if (value && typeof value === "object") {
+        return String(
+          value.status ?? value.state ?? value.phase ?? value.type ?? ""
+        ).toLowerCase()
+      }
+      return ""
+    }
+
+    function handlePublicEvent(event, ctx) {
+      const type = String(event?.type ?? event?.event ?? "").toLowerCase()
+      if (!type) return
+      if (type === "session.idle") {
+        sendStop(event, ctx, false, true)
+      } else if (type.includes("complete") || type.includes("completed")) {
+        sendStop(event, ctx, false)
+      } else if (type === "session.error" || type.includes("error") || type.includes("abort") || type.includes("cancel") || type.includes("fail")) {
+        sendStop(event, ctx, true)
+      } else if (type.startsWith("session.next.")) {
+        sendRunning(event, ctx, true)
+      } else if (type === "session.status") {
+        const status = statusFrom(event)
+        if (status === "idle") {
+          sendStop(event, ctx, false, true)
+        } else if (["complete", "completed", "done"].includes(status)) {
+          sendStop(event, ctx, false)
+        } else if (["error", "failed", "cancelled", "canceled", "aborted"].includes(status)) {
+          sendStop(event, ctx, true)
+        } else {
+          sendRunning(event, ctx)
+        }
+      } else if (type === "tool.execute.after") {
+        touchRunning(event, ctx)
+        sendToolCompleted(event, ctx)
+      }
+    }
+
+    export const BoringNotchNotificationPlugin = async (ctx) => {
+      return {
+        event: async ({ event }) => handlePublicEvent(event, ctx),
+        "tool.execute.before": async (input) => touchRunning(input, ctx),
+        "tool.execute.after": async (input) => {
+          touchRunning(input, ctx)
+          sendToolCompleted(input, ctx)
+        },
+      }
+    }
+    """#
 
     @objc func validateCodexNotificationPayload(
         _ payload: String,
         signature: String,
         with reply: @escaping (Bool) -> Void
     ) {
-        do {
-            let secret = try CodexHookSecretStore.load(at: codexHookURLs().secret)
+        for secretURL in [codexHookURLs().secret, openCodePluginURLs().secret] {
+            guard let secret = try? CodexHookSecretStore.load(at: secretURL) else {
+                continue
+            }
             switch CodexHookAuthenticator.validate(
                 payload: payload,
                 signature: signature,
@@ -867,20 +1203,24 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                 return
             case .malformedInput:
                 Self.codexLogger.error("Rejected malformed Codex notification authentication input")
+                reply(false)
+                return
             case .invalidSecret:
                 Self.codexLogger.error("Rejected Codex notification because the hook secret is invalid")
             case .invalidSignature:
-                Self.codexLogger.error("Rejected Codex notification because its signature did not match")
+                continue
             case .malformedPayload:
                 Self.codexLogger.error("Rejected malformed authenticated Codex notification data")
+                reply(false)
+                return
             case .expired:
                 Self.codexLogger.error("Rejected an expired Codex notification")
+                reply(false)
+                return
             }
-            reply(false)
-        } catch {
-            Self.codexLogger.error("Codex notification authentication failed: \(error.localizedDescription, privacy: .public)")
-            reply(false)
         }
+        Self.codexLogger.error("Rejected Codex notification because its signature did not match")
+        reply(false)
     }
 
     @objc func isCodexNotificationHookInstalled(with reply: @escaping (Bool) -> Void) {
@@ -895,6 +1235,10 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                 return
             }
             _ = try CodexHookSecretStore.load(at: urls.secret)
+            guard try isCodexHooksFeatureEnabled(at: urls.runtimeConfiguration) else {
+                reply(false)
+                return
+            }
             let root = try readCodexHookConfiguration(at: urls.configuration)
             reply(Self.codexHookEvents.allSatisfy {
                 containsCurrentOwnedCodexHook(
@@ -916,10 +1260,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                 reply(false)
                 return
             }
-            let configURL = urls.configuration
-                .deletingLastPathComponent()
-                .appendingPathComponent("config.toml")
-            let configurationData = try CodexHookFileStore.load(at: configURL)
+            let configurationData = try CodexHookFileStore.load(at: urls.runtimeConfiguration)
             guard let configuration = String(data: configurationData, encoding: .utf8) else {
                 reply(false)
                 return
@@ -981,6 +1322,7 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
                     Data(Self.codexNotificationScript.utf8),
                     at: urls.script
                 )
+                try enableCodexHooksFeature(at: urls.runtimeConfiguration)
             }
             try CodexHookFileStore.publish(data, at: urls.configuration)
 
@@ -996,13 +1338,196 @@ class BoringNotchXPCHelper: NSObject, BoringNotchXPCHelperProtocol {
         }
     }
 
-    private func codexHookURLs() -> (configuration: URL, script: URL, secret: URL) {
-        let directory = FileManager.default.homeDirectoryForCurrentUser
-            .appendingPathComponent(".codex", isDirectory: true)
+    @objc func isOpenCodeNotificationPluginInstalled(with reply: @escaping (Bool) -> Void) {
+        do {
+            let urls = openCodePluginURLs()
+            guard FileManager.default.fileExists(atPath: urls.plugin.path) else {
+                reply(false)
+                return
+            }
+            guard try CodexHookFileStore.load(at: urls.plugin)
+                == Data(Self.openCodeNotificationPlugin.utf8) else {
+                reply(false)
+                return
+            }
+            _ = try CodexHookSecretStore.load(at: urls.secret)
+            reply(true)
+        } catch {
+            reply(false)
+        }
+    }
+
+    @objc func setOpenCodeNotificationPluginInstalled(
+        _ installed: Bool,
+        with reply: @escaping (Bool, String?) -> Void
+    ) {
+        do {
+            let urls = openCodePluginURLs()
+            try FileManager.default.createDirectory(
+                at: urls.plugin.deletingLastPathComponent(),
+                withIntermediateDirectories: true
+            )
+            try CodexHookFileStore.validateParent(of: urls.plugin)
+            if installed {
+                _ = try ensureCodexHookSecret(at: urls.secret)
+                try CodexHookFileStore.publish(
+                    Data(Self.openCodeNotificationPlugin.utf8),
+                    at: urls.plugin
+                )
+            } else {
+                for url in [urls.plugin, urls.secret]
+                    where FileManager.default.fileExists(atPath: url.path) {
+                    try FileManager.default.removeItem(at: url)
+                }
+            }
+            reply(true, nil)
+        } catch {
+            reply(false, error.localizedDescription)
+        }
+    }
+
+    private func codexHookURLs() -> (
+        configuration: URL,
+        runtimeConfiguration: URL,
+        script: URL,
+        secret: URL
+    ) {
+        let directory = codexHomeURL()
         return (
             directory.appendingPathComponent("hooks.json"),
+            directory.appendingPathComponent("config.toml"),
             directory.appendingPathComponent(Self.codexHookMarker),
             directory.appendingPathComponent(Self.codexHookSecretMarker)
+        )
+    }
+
+    private func codexHomeURL() -> URL {
+        if let rawCodexHome = ProcessInfo.processInfo.environment["CODEX_HOME"],
+           !rawCodexHome.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            return URL(fileURLWithPath: rawCodexHome, isDirectory: true)
+                .standardizedFileURL
+        }
+        return FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".codex", isDirectory: true)
+    }
+
+    private func enableCodexHooksFeature(at url: URL) throws {
+        var configuration = ""
+        if FileManager.default.fileExists(atPath: url.path) {
+            guard let text = String(
+                data: try CodexHookFileStore.load(at: url),
+                encoding: .utf8
+            ) else {
+                throw codexHookConfigurationError(
+                    code: 6,
+                    message: "Codex config.toml must be valid UTF-8."
+                )
+            }
+            configuration = text
+        }
+        let updatedConfiguration = Self.settingCodexHooksFeatureEnabled(configuration)
+        guard updatedConfiguration != configuration else { return }
+        try CodexHookFileStore.publish(Data(updatedConfiguration.utf8), at: url)
+    }
+
+    private func isCodexHooksFeatureEnabled(at url: URL) throws -> Bool {
+        guard FileManager.default.fileExists(atPath: url.path),
+              let configuration = String(
+                  data: try CodexHookFileStore.load(at: url),
+                  encoding: .utf8
+              ) else {
+            return false
+        }
+        return Self.codexHooksFeatureValue(in: configuration) == true
+    }
+
+    private static func settingCodexHooksFeatureEnabled(_ configuration: String) -> String {
+        var lines = configuration.components(separatedBy: .newlines)
+        if lines.last == "" {
+            lines.removeLast()
+        }
+
+        var featuresStart: Int?
+        var featuresEnd = lines.count
+        for (index, rawLine) in lines.enumerated() {
+            let line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)
+            if line == "[features]" {
+                featuresStart = index
+                continue
+            }
+            if featuresStart != nil,
+               index > featuresStart!,
+               line.hasPrefix("["),
+               line.hasSuffix("]") {
+                featuresEnd = index
+                break
+            }
+        }
+
+        if let featuresStart {
+            for index in (featuresStart + 1)..<featuresEnd {
+                let line = lines[index].trimmingCharacters(in: .whitespaces)
+                let key = line.split(separator: "=", maxSplits: 1)
+                    .first?
+                    .trimmingCharacters(in: .whitespaces)
+                if let key, key == "hooks" || key == "codex_hooks" {
+                    lines[index] = "\(key) = true"
+                    return lines.joined(separator: "\n") + "\n"
+                }
+            }
+            lines.insert("hooks = true", at: featuresEnd)
+            return lines.joined(separator: "\n") + "\n"
+        }
+
+        if !lines.isEmpty {
+            lines.append("")
+        }
+        lines.append("[features]")
+        lines.append("hooks = true")
+        return lines.joined(separator: "\n") + "\n"
+    }
+
+    private static func codexHooksFeatureValue(in configuration: String) -> Bool? {
+        var isInFeatures = false
+        for rawLine in configuration.components(separatedBy: .newlines) {
+            let line = rawLine
+                .split(separator: "#", maxSplits: 1)
+                .first
+                .map(String.init)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if line == "[features]" {
+                isInFeatures = true
+                continue
+            }
+            if isInFeatures, line.hasPrefix("["), line.hasSuffix("]") {
+                isInFeatures = false
+                continue
+            }
+            guard isInFeatures else { continue }
+            let parts = line.split(separator: "=", maxSplits: 1).map {
+                $0.trimmingCharacters(in: .whitespaces)
+            }
+            guard parts.count == 2,
+                  parts[0] == "hooks" || parts[0] == "codex_hooks" else {
+                continue
+            }
+            switch parts[1].lowercased() {
+            case "true": return true
+            case "false": return false
+            default: continue
+            }
+        }
+        return nil
+    }
+
+    private func openCodePluginURLs() -> (plugin: URL, secret: URL) {
+        let directory = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".config", isDirectory: true)
+            .appendingPathComponent("opencode", isDirectory: true)
+            .appendingPathComponent("plugins", isDirectory: true)
+        return (
+            directory.appendingPathComponent(Self.openCodePluginMarker),
+            directory.appendingPathComponent(Self.openCodePluginSecretMarker)
         )
     }
 

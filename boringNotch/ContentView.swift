@@ -96,7 +96,9 @@ struct ContentView: View {
         let extensionActivities = extensionRegistry.closedActivities(context: .init(
             surfaceID: vm.screenUUID ?? "primary",
             closedNotchWidth: vm.closedNotchSize.width,
-            displayHeight: displayHeight
+            displayHeight: displayHeight,
+            idleHeight: vm.hasNotch ? displayHeight : 11,
+            gestureProgress: gestureProgress
         ))
         let context = ClosedNotchSnapshotContext(
             closedNotchWidth: vm.closedNotchSize.width,

@@ -18,6 +18,7 @@ final class CodexNotificationManager: ObservableObject {
 
     @Published private(set) var state = CodexNotificationState()
     @Published private(set) var presentedNotification: CodexJobNotification?
+    @Published private(set) var agentTasks: [AgentTaskRecord] = []
     @Published private(set) var lastError: String?
     @Published private(set) var submittingNotificationIDs: Set<String> = []
     @Published private(set) var expandedPermissionNotificationID: String?
@@ -30,6 +31,7 @@ final class CodexNotificationManager: ObservableObject {
     private var passivePresentationPolicy = CodexPassivePresentationPolicy()
     private var permissionExpirationTask: Task<Void, Never>?
     private var eventIngestionTask: Task<Void, Never>?
+    private var ignoredAgentTaskIDs: Set<String> = []
     private var replayGuard = CodexNotificationReplayGuard(
         lifetime: CodexNotificationManager.authenticatedPayloadLifetime
     )
@@ -73,6 +75,8 @@ final class CodexNotificationManager: ObservableObject {
         eventIngestionTask?.cancel()
         eventIngestionTask = nil
         presentedNotification = nil
+        agentTasks = []
+        ignoredAgentTaskIDs.removeAll()
     }
 
     @discardableResult
@@ -131,6 +135,7 @@ final class CodexNotificationManager: ObservableObject {
             }
             var updatedState = state
             updatedState.reduce(event)
+            updateAgentTask(from: event, state: updatedState)
             state = updatedState
             lastError = nil
             clearExpandedPermissionIfNeeded()
@@ -146,6 +151,17 @@ final class CodexNotificationManager: ObservableObject {
     func dismissVisibleNotification() {
         guard let visibleNotification else { return }
         dismiss(notification: visibleNotification)
+    }
+
+    func dismissAgentTask(id: String) {
+        ignoredAgentTaskIDs.insert(id)
+        agentTasks.removeAll { $0.id == id }
+        var updatedState = state
+        updatedState.dismiss(id)
+        state = updatedState
+        clearExpandedPermissionIfNeeded()
+        schedulePermissionExpiration()
+        synchronizePresentedNotification()
     }
 
     func presentPermissionDetail(for notification: CodexJobNotification) {
@@ -478,6 +494,59 @@ final class CodexNotificationManager: ObservableObject {
         clearExpandedPermissionIfNeeded()
         schedulePermissionExpiration()
         synchronizePresentedNotification()
+    }
+
+    private func updateAgentTask(
+        from event: CodexHookEvent,
+        state updatedState: CodexNotificationState
+    ) {
+        let sessionID: String
+        let turnID: String?
+        switch event {
+        case .userPrompt(let eventSessionID, let eventTurnID, _, _, _, _),
+             .permissionRequest(let eventSessionID, let eventTurnID, _, _, _, _, _, _),
+             .toolCompleted(let eventSessionID, let eventTurnID, _, _, _),
+             .stop(let eventSessionID, let eventTurnID, _, _, _, _, _, _):
+            sessionID = eventSessionID
+            turnID = eventTurnID
+        }
+
+        guard let notification = updatedState.notifications
+            .filter({
+                $0.sessionID == sessionID && (turnID == nil || $0.turnID == turnID)
+            })
+            .max(by: { $0.createdAt < $1.createdAt }) else {
+            if case .stop(_, _, _, _, _, _, _, let silent) = event, silent {
+                agentTasks.removeAll {
+                    $0.sessionID == sessionID && (turnID == nil || $0.turnID == turnID)
+                }
+            }
+            return
+        }
+        guard !ignoredAgentTaskIDs.contains(notification.id) else {
+            return
+        }
+        upsertAgentTask(AgentTaskRecord(notification: notification))
+    }
+
+    var currentRunningAgentTask: AgentTaskRecord? {
+        agentTasks.first(where: { $0.status == .running })
+    }
+
+    private func upsertAgentTask(_ task: AgentTaskRecord) {
+        ignoredAgentTaskIDs.remove(task.id)
+        agentTasks.removeAll { $0.id == task.id }
+        agentTasks.append(task)
+        agentTasks.sort { first, second in
+            if first.status.priority != second.status.priority {
+                return first.status.priority > second.status.priority
+            }
+            return first.updatedAt > second.updatedAt
+        }
+        while agentTasks.count > 20 {
+            let removedTask = agentTasks.removeLast()
+            ignoredAgentTaskIDs.remove(removedTask.id)
+        }
     }
 
     private func synchronizePresentedNotification() {

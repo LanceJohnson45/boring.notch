@@ -32,14 +32,26 @@ extension NotchDestinationDescriptor {
             icon: "tray.fill",
             order: 1,
             isAvailable: true
+        ),
+        .init(
+            destination: .agent,
+            label: "Agent",
+            icon: "sparkles",
+            order: 2,
+            isAvailable: true
         )
     ]
 
-    static let availableBuiltIn: [Self] = {
+    @MainActor
+    static var availableBuiltIn: [Self] {
         builtIn
-            .filter(\.isAvailable)
+            .filter {
+                $0.isAvailable
+                    && ($0.destination != .agent
+                        || !CodexNotificationManager.shared.agentTasks.isEmpty)
+            }
             .sorted { $0.order < $1.order }
-    }()
+    }
 }
 
 struct TabSelectionView: View {

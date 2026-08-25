@@ -5,6 +5,8 @@ struct ClosedNotchExtensionContext {
     let surfaceID: String
     let closedNotchWidth: CGFloat
     let displayHeight: CGFloat
+    let idleHeight: CGFloat
+    let gestureProgress: CGFloat
 }
 
 struct ClosedNotchExtensionActivity {

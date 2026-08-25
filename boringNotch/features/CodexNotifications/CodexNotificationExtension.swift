@@ -1,4 +1,5 @@
 import Combine
+import Defaults
 import SwiftUI
 
 @MainActor
@@ -13,44 +14,99 @@ enum CodexNotificationExtension {
         start: { CodexNotificationManager.shared.start() },
         stop: { CodexNotificationManager.shared.stop() },
         closedActivities: { context in
-            guard let notification = CodexNotificationManager.shared.presentedNotification else {
-                return []
+            if let notification = CodexNotificationManager.shared.presentedNotification {
+                return [notificationActivity(notification: notification, context: context)]
             }
 
-            let height = max(32, context.displayHeight)
-            let notchWidth = context.closedNotchWidth + 10
-            let promptWidth: CGFloat = 236
-            let isPermissionRequest = notification.status == .needsAction(.permission)
-            let tapRouting = CodexClosedActivityTapRouting(status: notification.status)
-            let metrics = ClosedNotchLayoutMetrics(
-                exclusionWidth: notchWidth,
-                leadingWidth: 0,
-                trailingWidth: promptWidth,
-                leadingExclusionMargin: 0,
-                trailingExclusionMargin: 0,
-                horizontalChromeInset: cornerRadiusInsets.closed.bottom,
-                height: height
-            )
-            return [ClosedNotchExtensionActivity(
-                id: activityID,
-                priority: notification.status.notchPriority,
-                updatedAt: notification.createdAt,
-                metrics: metrics,
-                content: AnyView(CodexClosedNotchPrompt(
-                    notification: notification,
-                    presentationSurfaceID: context.surfaceID,
-                    metrics: metrics
-                )),
-                opensNotchOnHover: isPermissionRequest,
-                opensNotchOnTap: tapRouting == .expandNotch,
-                onSelect: tapRouting == .openCodex ? {
-                    CodexNotificationManager.shared.selectCompactActivity(
-                        for: notification
-                    )
-                } : nil
-            )]
+            guard let task = CodexNotificationManager.shared.currentRunningAgentTask else {
+                return []
+            }
+            return [agentIdleActivity(task: task, context: context)]
         }
     )
+
+    private static func notificationActivity(
+        notification: CodexJobNotification,
+        context: ClosedNotchExtensionContext
+    ) -> ClosedNotchExtensionActivity {
+        let height = max(32, context.displayHeight)
+        let notchWidth = context.closedNotchWidth + 10
+        let promptWidth: CGFloat = 236
+        let isPermissionRequest = notification.status == .needsAction(.permission)
+        let tapRouting = CodexClosedActivityTapRouting(status: notification.status)
+        let canOpenCodex = !notification.sessionID.hasPrefix("opencode:")
+        let metrics = ClosedNotchLayoutMetrics(
+            exclusionWidth: notchWidth,
+            leadingWidth: 0,
+            trailingWidth: promptWidth,
+            leadingExclusionMargin: 0,
+            trailingExclusionMargin: 0,
+            horizontalChromeInset: cornerRadiusInsets.closed.bottom,
+            height: height
+        )
+
+        return ClosedNotchExtensionActivity(
+            id: activityID,
+            priority: notification.status.notchPriority,
+            updatedAt: notification.createdAt,
+            metrics: metrics,
+            content: AnyView(CodexClosedNotchPrompt(
+                notification: notification,
+                presentationSurfaceID: context.surfaceID,
+                metrics: metrics
+            )),
+            opensNotchOnHover: isPermissionRequest,
+            opensNotchOnTap: tapRouting == .expandNotch,
+            onSelect: tapRouting == .openCodex && canOpenCodex ? {
+                CodexNotificationManager.shared.selectCompactActivity(
+                    for: notification
+                )
+            } : nil
+        )
+    }
+
+    private static func agentIdleActivity(
+        task: AgentTaskRecord,
+        context: ClosedNotchExtensionContext
+    ) -> ClosedNotchExtensionActivity {
+        let cornerScale: CGFloat? = Defaults[.cornerRadiusScaling]
+            && context.displayHeight > 0
+            ? context.displayHeight / 38
+            : nil
+        let albumArtWidth = max(0, context.displayHeight - 12 * (cornerScale ?? 1))
+        let spectrumWidth = max(0, context.displayHeight - 12 + context.gestureProgress / 2)
+        let centralizedEdgeMargin = max(0, liveActivityEdgeMargin - 2)
+        let metrics = ClosedNotchLayoutMetrics(
+            exclusionWidth: context.closedNotchWidth,
+            leadingWidth: albumArtWidth,
+            trailingWidth: spectrumWidth,
+            leadingExclusionMargin: centralizedEdgeMargin,
+            trailingExclusionMargin: centralizedEdgeMargin,
+            horizontalChromeInset: cornerRadiusInsets.closed.bottom,
+            height: context.displayHeight
+        )
+
+        return ClosedNotchExtensionActivity(
+            id: "\(activityID).idle",
+            priority: Defaults[.agentIdlePriority].closedNotchPriority,
+            updatedAt: task.updatedAt,
+            metrics: metrics,
+            content: AnyView(AgentClosedIdleStatus(task: task, metrics: metrics)),
+            opensNotchOnHover: false,
+            opensNotchOnTap: true,
+            onSelect: nil
+        )
+    }
+}
+
+private extension AgentIdlePriority {
+    var closedNotchPriority: ClosedNotchPresentationPriority {
+        switch self {
+        case .low: .ambient
+        case .normal: .activity
+        case .high: .system
+        }
+    }
 }
 
 private extension CodexJobStatus {
@@ -65,7 +121,7 @@ private extension CodexJobStatus {
         switch self {
         case .needsAction(.permission), .needsAction(.decision), .failed:
             .critical
-        case .needsAction(.manualCheck):
+        case .needsAction(.manualCheck), .running:
             .system
         case .succeeded:
             .activity
@@ -77,14 +133,17 @@ private extension CodexJobStatus {
         case .needsAction(.permission): .orange
         case .needsAction(.decision): .purple
         case .needsAction(.manualCheck): .blue
+        case .running: .cyan
         case .failed: .red
         case .succeeded: .green
         }
     }
 
     var pulses: Bool {
-        if case .needsAction = self { return true }
-        return false
+        switch self {
+        case .needsAction, .running: true
+        case .failed, .succeeded: false
+        }
     }
 }
 
@@ -142,6 +201,10 @@ private struct CodexClosedNotchPrompt: View {
         notification.status == .needsAction(.permission)
     }
 
+    private var canOpenCodex: Bool {
+        !notification.sessionID.hasPrefix("opencode:")
+    }
+
     private var launchError: String? {
         manager.compactLaunchError(for: notification)
     }
@@ -150,7 +213,8 @@ private struct CodexClosedNotchPrompt: View {
         CodexClosedActivityAccessibility(
             status: notification.status,
             projectName: notification.projectName,
-            launchError: launchError
+            launchError: launchError,
+            canOpenCodex: canOpenCodex
         )
     }
 
@@ -228,6 +292,56 @@ private struct CodexClosedNotchPrompt: View {
             return "\(launchError) · Click to retry"
         }
         return "\(notification.status.title) · \(notification.projectName)"
+    }
+}
+
+private struct AgentClosedIdleStatus: View {
+    let task: AgentTaskRecord
+    let metrics: ClosedNotchLayoutMetrics
+
+    var body: some View {
+        ZStack {
+            ClosedNotchLayout(metrics: metrics) {
+                Image(systemName: task.provider.icon)
+                    .font(.system(size: 11, weight: .semibold))
+                    .foregroundStyle(providerColor)
+                    .frame(width: metrics.leadingWidth, height: metrics.leadingWidth)
+            } trailing: {
+                HStack(spacing: 3) {
+                    Text(task.status.title)
+                        .font(.system(size: 8, weight: .bold, design: .rounded))
+                        .foregroundStyle(providerColor.opacity(0.95))
+                        .lineLimit(1)
+
+                    Image(systemName: task.status.icon)
+                        .font(.system(size: 9, weight: .bold))
+                        .foregroundStyle(providerColor.opacity(0.95))
+                }
+                .frame(width: metrics.trailingWidth, height: metrics.height, alignment: .center)
+            }
+
+            Text("\(task.provider.displayName) · \(task.title)")
+                .font(.system(size: 9, weight: .semibold, design: .rounded))
+                .foregroundStyle(.white.opacity(0.92))
+                .lineLimit(1)
+                .truncationMode(.tail)
+                .frame(
+                    width: max(0, metrics.totalWidth - metrics.leadingWidth - metrics.trailingWidth - 8),
+                    height: metrics.height,
+                    alignment: .center
+                )
+        }
+        .frame(width: metrics.totalWidth, height: metrics.height)
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(task.provider.displayName) task")
+        .accessibilityValue("\(task.status.title). \(task.title)")
+    }
+
+    private var providerColor: Color {
+        switch task.provider {
+        case .codex: .cyan
+        case .openCode: .mint
+        }
     }
 }
 
