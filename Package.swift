@@ -9,6 +9,8 @@ let package = Package(
         .library(name: "CodexNotificationsCore", targets: ["CodexNotificationsCore"])
     ],
     targets: [
+        .target(name: "PomodoroPush", path: "boringNotch/features/Pomodoro"),
+        .testTarget(name: "PomodoroPushTests", dependencies: ["PomodoroPush"], path: "Tests/PomodoroPushTests"),
         .target(
             name: "CodexHookTrustState",
             path: "BoringNotchXPCHelper",

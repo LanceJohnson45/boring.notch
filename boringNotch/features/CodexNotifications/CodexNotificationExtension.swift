@@ -18,10 +18,9 @@ enum CodexNotificationExtension {
                 return [notificationActivity(notification: notification, context: context)]
             }
 
-            guard let task = CodexNotificationManager.shared.currentRunningAgentTask else {
-                return []
+            return CodexNotificationManager.shared.runningAgentTasks.map {
+                agentIdleActivity(task: $0, context: context)
             }
-            return [agentIdleActivity(task: task, context: context)]
         }
     )
 
@@ -31,7 +30,11 @@ enum CodexNotificationExtension {
     ) -> ClosedNotchExtensionActivity {
         let height = max(32, context.displayHeight)
         let notchWidth = context.closedNotchWidth + 10
-        let promptWidth: CGFloat = 236
+        let launchError = CodexNotificationManager.shared.compactLaunchError(for: notification)
+        let promptWidth = notificationPromptWidth(
+            notification: notification,
+            launchError: launchError
+        )
         let isPermissionRequest = notification.status == .needsAction(.permission)
         let tapRouting = CodexClosedActivityTapRouting(status: notification.status)
         let canOpenCodex = !notification.sessionID.hasPrefix("opencode:")
@@ -66,33 +69,76 @@ enum CodexNotificationExtension {
         )
     }
 
+    private static func notificationPromptWidth(
+        notification: CodexJobNotification,
+        launchError: String?
+    ) -> CGFloat {
+        let provider = AgentTaskProvider.provider(for: notification.sessionID)
+        let title = imperialTitle(for: notification.chatTitle)
+        let summary: String
+        if let launchError {
+            summary = "启奏陛下，\(launchError) · Click to retry"
+        } else {
+            summary = "\(notification.status.imperialSummary(for: provider)) · \(notification.projectName)"
+        }
+
+        let textWidth = max(
+            estimatedTextWidth(title, fontSize: 11, weight: 0.62),
+            estimatedTextWidth(summary, fontSize: 9, weight: 0.58)
+        )
+        let iconAndPadding: CGFloat = 78
+        return min(420, max(236, ceil(textWidth + iconAndPadding)))
+    }
+
+    private static func imperialTitle(for rawTitle: String) -> String {
+        let title = rawTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.hasPrefix("陛下") else { return title }
+        return "陛下 · \(title)"
+    }
+
+    private static func estimatedTextWidth(
+        _ text: String,
+        fontSize: CGFloat,
+        weight: CGFloat
+    ) -> CGFloat {
+        text.reduce(CGFloat.zero) { width, character in
+            if character.isWhitespace {
+                return width + fontSize * 0.35
+            }
+            if character.isASCII {
+                return width + fontSize * weight
+            }
+            return width + fontSize
+        }
+    }
+
     private static func agentIdleActivity(
         task: AgentTaskRecord,
         context: ClosedNotchExtensionContext
     ) -> ClosedNotchExtensionActivity {
-        let cornerScale: CGFloat? = Defaults[.cornerRadiusScaling]
-            && context.displayHeight > 0
-            ? context.displayHeight / 38
-            : nil
-        let albumArtWidth = max(0, context.displayHeight - 12 * (cornerScale ?? 1))
-        let spectrumWidth = max(0, context.displayHeight - 12 + context.gestureProgress / 2)
-        let centralizedEdgeMargin = max(0, liveActivityEdgeMargin - 2)
+        let spriteWidth = task.provider == .codex || task.provider == .zCode
+            ? max(34, min(46, context.displayHeight + 14))
+            : max(22, min(34, context.displayHeight + 4))
         let metrics = ClosedNotchLayoutMetrics(
-            exclusionWidth: context.closedNotchWidth,
-            leadingWidth: albumArtWidth,
-            trailingWidth: spectrumWidth,
-            leadingExclusionMargin: centralizedEdgeMargin,
-            trailingExclusionMargin: centralizedEdgeMargin,
+            exclusionWidth: spriteWidth,
+            leadingWidth: 0,
+            trailingWidth: 0,
+            leadingExclusionMargin: 0,
+            trailingExclusionMargin: 0,
             horizontalChromeInset: cornerRadiusInsets.closed.bottom,
             height: context.displayHeight
         )
 
         return ClosedNotchExtensionActivity(
-            id: "\(activityID).idle",
+            id: "\(activityID).idle.\(task.id)",
             priority: Defaults[.agentIdlePriority].closedNotchPriority,
             updatedAt: task.updatedAt,
             metrics: metrics,
-            content: AnyView(AgentClosedIdleStatus(task: task, metrics: metrics)),
+            isIdleWidget: true,
+            content: AnyView(AgentClosedIdleStatus(
+                task: task,
+                metrics: metrics
+            )),
             opensNotchOnHover: false,
             opensNotchOnTap: true,
             onSelect: nil
@@ -242,58 +288,70 @@ private struct CodexClosedNotchPrompt: View {
     }
 
     private var promptContainer: some View {
-        VStack(alignment: .center, spacing: 0) {
+        ZStack {
             Color.clear
-                .frame(width: metrics.exclusionWidth, height: metrics.height)
+                .frame(width: metrics.totalWidth, height: metrics.height)
                 .accessibilityHidden(true)
 
             prompt
                 .frame(
                     width: metrics.trailingWidth,
                     height: metrics.height,
-                    alignment: .leading
+                    alignment: .center
                 )
-                .contentShape(Rectangle())
-                .onHover { isHovered in
-                    CodexNotificationManager.shared.setPassivePresentationHovered(
-                        isHovered,
-                        for: notification,
-                        surfaceID: presentationSurfaceID
-                    )
-                }
+        }
+        .frame(width: metrics.totalWidth, height: metrics.height, alignment: .center)
+        .contentShape(Rectangle())
+        .onHover { isHovered in
+            CodexNotificationManager.shared.setPassivePresentationHovered(
+                isHovered,
+                for: notification,
+                surfaceID: presentationSurfaceID
+            )
         }
     }
 
     private var prompt: some View {
-        HStack(spacing: 10) {
+        HStack(spacing: 8) {
             CodexNotificationStatusIcon(status: notification.status)
                 .frame(width: 20, height: 28)
                 .accessibilityHidden(true)
 
-            VStack(alignment: .leading, spacing: 1) {
-                Text(notification.chatTitle)
+            VStack(alignment: .center, spacing: 1) {
+                Text(imperialTitle)
                     .font(.system(size: 11, weight: .semibold, design: .rounded))
                     .foregroundStyle(.white.opacity(0.92))
                     .lineLimit(1)
+                    .multilineTextAlignment(.center)
 
                 Text(summary)
                     .font(.system(size: 9, weight: .medium))
                     .foregroundStyle(notification.status.tint.opacity(0.95))
                     .lineLimit(1)
+                    .multilineTextAlignment(.center)
             }
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .center)
 
+            Color.clear
+                .frame(width: 20, height: 28)
+                .accessibilityHidden(true)
         }
-        .padding(.leading, 10)
-        .padding(.trailing, 7)
-        .padding(.bottom, 7)
+        .padding(.horizontal, 9)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
     }
 
     private var summary: String {
         if let launchError {
-            return "\(launchError) · Click to retry"
+            return "启奏陛下，\(launchError) · Click to retry"
         }
-        return "\(notification.status.title) · \(notification.projectName)"
+        let provider = AgentTaskProvider.provider(for: notification.sessionID)
+        return "\(notification.status.imperialSummary(for: provider)) · \(notification.projectName)"
+    }
+
+    private var imperialTitle: String {
+        let title = notification.chatTitle.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !title.hasPrefix("陛下") else { return title }
+        return "陛下 · \(title)"
     }
 }
 
@@ -302,48 +360,221 @@ private struct AgentClosedIdleStatus: View {
     let metrics: ClosedNotchLayoutMetrics
 
     var body: some View {
-        ZStack {
-            ClosedNotchLayout(metrics: metrics) {
-                Image(systemName: task.provider.icon)
-                    .font(.system(size: 11, weight: .semibold))
-                    .foregroundStyle(providerColor)
-                    .frame(width: metrics.leadingWidth, height: metrics.leadingWidth)
-            } trailing: {
-                HStack(spacing: 3) {
-                    Text(task.status.title)
-                        .font(.system(size: 8, weight: .bold, design: .rounded))
-                        .foregroundStyle(providerColor.opacity(0.95))
-                        .lineLimit(1)
-
-                    Image(systemName: task.status.icon)
-                        .font(.system(size: 9, weight: .bold))
-                        .foregroundStyle(providerColor.opacity(0.95))
-                }
-                .frame(width: metrics.trailingWidth, height: metrics.height, alignment: .center)
-            }
-
-            Text("\(task.provider.displayName) · \(task.title)")
-                .font(.system(size: 9, weight: .semibold, design: .rounded))
-                .foregroundStyle(.white.opacity(0.92))
-                .lineLimit(1)
-                .truncationMode(.tail)
-                .frame(
-                    width: max(0, metrics.totalWidth - metrics.leadingWidth - metrics.trailingWidth - 8),
-                    height: metrics.height,
-                    alignment: .center
+        Group {
+            if task.provider == .codex {
+                AgentAssetRunner(
+                    assetPrefix: "codexAgentHero",
+                    frameCount: 15,
+                    direction: .right
                 )
+            } else if task.provider == .zCode {
+                AgentAssetRunner(
+                    assetPrefix: "zcodeAgentHero",
+                    frameCount: 32,
+                    direction: .right
+                )
+            } else {
+                AgentPixelRunner(style: providerHeroStyle, direction: .right)
+            }
         }
         .frame(width: metrics.totalWidth, height: metrics.height)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("\(task.provider.displayName) task")
-        .accessibilityValue("\(task.status.title). \(task.title)")
+        .accessibilityLabel("\(task.provider.imperialDisplayName) is working")
+        .accessibilityValue("\(task.status.imperialSummary(for: task.provider)). \(task.title)")
     }
 
-    private var providerColor: Color {
+    private var providerHeroStyle: AgentPixelHeroStyle {
         switch task.provider {
-        case .codex: .cyan
-        case .openCode: .mint
-        case .zCode: .orange
+        case .codex: .techKnight
+        case .openCode: .greenRogue
+        case .zCode: .solarRunner
+        }
+    }
+}
+
+private struct AgentAssetRunner: View {
+    let assetPrefix: String
+    let frameCount: Int
+    let direction: AgentPixelDirection
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.12)) { timeline in
+            let frameIndex = Int(timeline.date.timeIntervalSinceReferenceDate * 8.0)
+                % max(1, frameCount)
+            Image("\(assetPrefix)\(frameIndex)")
+                .resizable()
+                .interpolation(.none)
+                .scaledToFit()
+                .scaleEffect(x: direction == .left ? -1 : 1, y: 1)
+                .padding(.vertical, 1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .shadow(color: Color(red: 0.9, green: 0.16, blue: 0.16).opacity(0.55), radius: 2, y: 1)
+        .accessibilityHidden(true)
+    }
+}
+
+private enum AgentPixelHeroStyle {
+    case techKnight
+    case greenRogue
+    case solarRunner
+
+    var main: Color {
+        switch self {
+        case .techKnight: Color(red: 0.12, green: 0.76, blue: 0.96)
+        case .greenRogue: Color(red: 0.16, green: 0.76, blue: 0.28)
+        case .solarRunner: Color(red: 0.95, green: 0.18, blue: 0.12)
+        }
+    }
+
+    var secondary: Color {
+        switch self {
+        case .techKnight: Color(red: 0.16, green: 0.28, blue: 0.85)
+        case .greenRogue: Color(red: 0.54, green: 0.18, blue: 0.78)
+        case .solarRunner: Color(red: 1.0, green: 0.82, blue: 0.08)
+        }
+    }
+
+    var accent: Color {
+        switch self {
+        case .techKnight: Color(red: 0.82, green: 0.98, blue: 1.0)
+        case .greenRogue: Color(red: 0.76, green: 0.96, blue: 0.48)
+        case .solarRunner: Color(red: 1.0, green: 0.54, blue: 0.08)
+        }
+    }
+
+    var glow: Color {
+        switch self {
+        case .techKnight: .cyan
+        case .greenRogue: .green
+        case .solarRunner: .orange
+        }
+    }
+}
+
+private enum AgentPixelDirection {
+    case left
+    case right
+}
+
+private struct AgentPixelRunner: View {
+    let style: AgentPixelHeroStyle
+    let direction: AgentPixelDirection
+
+    var body: some View {
+        TimelineView(.periodic(from: .now, by: 0.18)) { timeline in
+            let frameIndex = Int(timeline.date.timeIntervalSinceReferenceDate * 5.5)
+                % Self.frames.count
+            PixelSprite(rows: Self.frames[frameIndex], style: style)
+                .scaleEffect(x: direction == .left ? -1 : 1, y: 1)
+                .offset(y: frameIndex == 1 ? -1 : 1)
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
+        .accessibilityHidden(true)
+    }
+
+    private static let frames = [
+        [
+            "....KKKK....",
+            "...KMMMMK...",
+            "..KMEEMMK...",
+            "..KMMMMKK...",
+            "..KSSMMK....",
+            ".KKMMMMKK...",
+            "KAMMSSMMAK..",
+            "..KMMMMK....",
+            ".KMMKKMMK...",
+            ".KMK..KMK...",
+            "KSK....KSK..",
+            "AA......AA.."
+        ],
+        [
+            "....KKKK....",
+            "...KMMMMK...",
+            "..KMEEMMK...",
+            "..KMMMMKK...",
+            "..KSSMMK....",
+            ".KKMMMMKK...",
+            "AAMMSSMMK...",
+            "..KMMMMK....",
+            ".KMMKKMMK...",
+            "..KMK.KMK...",
+            ".KSK..KSK...",
+            "AA....AA...."
+        ],
+        [
+            "....KKKK....",
+            "...KMMMMK...",
+            "..KMEEMMK...",
+            "..KMMMMKK...",
+            "..KSSMMK....",
+            ".KKMMMMKK...",
+            "..KMMSSMMAK.",
+            "..KMMMMK....",
+            ".KMMKKMMK...",
+            ".KMK.KMK....",
+            "KSK..KSK....",
+            ".AA....AA..."
+        ]
+    ]
+}
+
+private struct PixelSprite: View {
+    let rows: [String]
+    let style: AgentPixelHeroStyle
+
+    var body: some View {
+        VStack(spacing: 0) {
+            ForEach(Array(rows.enumerated()), id: \.offset) { _, row in
+                HStack(spacing: 0) {
+                    ForEach(Array(row.enumerated()), id: \.offset) { _, pixel in
+                        Rectangle()
+                            .fill(color(for: pixel))
+                            .frame(width: 1.75, height: 1.75)
+                    }
+                }
+            }
+        }
+        .shadow(color: style.glow.opacity(0.55), radius: 2, y: 1)
+    }
+
+    private func color(for pixel: Character) -> Color {
+        switch pixel {
+        case "K": Color.black
+        case "M": style.main
+        case "S": style.secondary
+        case "A": style.accent
+        case "E": Color.white
+        default: .clear
+        }
+    }
+}
+
+private extension AgentTaskProvider {
+    var imperialDisplayName: String {
+        switch self {
+        case .codex: "小GPT"
+        case .openCode: "小OpenCode"
+        case .zCode: "小ZCode"
+        }
+    }
+}
+
+private extension CodexJobStatus {
+    func imperialSummary(for provider: AgentTaskProvider) -> String {
+        switch self {
+        case .running:
+            return "启奏陛下，\(provider.imperialDisplayName)正在为陛下批阅"
+        case .succeeded:
+            return "启奏陛下，\(provider.imperialDisplayName)折子已毕，请陛下查验"
+        case .failed:
+            return "启奏陛下，\(provider.imperialDisplayName)折子遇阻，请陛下御览"
+        case .needsAction(.permission):
+            return "启奏陛下，\(provider.imperialDisplayName)请求陛下用印"
+        case .needsAction(.decision):
+            return "启奏陛下，\(provider.imperialDisplayName)候陛下定夺"
+        case .needsAction(.manualCheck):
+            return "启奏陛下，\(provider.imperialDisplayName)请陛下御览"
         }
     }
 }

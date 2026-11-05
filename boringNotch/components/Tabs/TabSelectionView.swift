@@ -39,6 +39,13 @@ extension NotchDestinationDescriptor {
             icon: "sparkles",
             order: 2,
             isAvailable: true
+        ),
+        .init(
+            destination: .pomodoro,
+            label: "Pomodoro",
+            icon: "timer",
+            order: 3,
+            isAvailable: true
         )
     ]
 

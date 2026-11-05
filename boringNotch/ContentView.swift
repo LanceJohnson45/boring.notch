@@ -17,6 +17,7 @@ struct ContentView: View {
     @ObservedObject private var coordinator = BoringViewCoordinator.shared
     @ObservedObject private var extensionRegistry = NotchExtensionRegistry.shared
     @ObservedObject private var codexNotifications = CodexNotificationManager.shared
+    @ObservedObject private var pomodoro = PomodoroManager.shared
 
     private let musicManager = MusicManager.shared
     private let batteryModel = BatteryStatusViewModel.shared
@@ -90,7 +91,15 @@ struct ContentView: View {
                 isPluggedIn: batteryModel.isPluggedIn,
                 maxAdapterWatts: batteryModel.maxAdapterWatts
             ),
-            osd: coordinator.binding(for: vm.screenUUID)
+            osd: coordinator.binding(for: vm.screenUUID),
+            pomodoro: .init(
+                icon: pomodoro.phase.icon,
+                secondsRemaining: pomodoro.secondsRemaining,
+                totalSeconds: pomodoro.totalSeconds,
+                isBreak: pomodoro.phase != .focus,
+                isRunning: pomodoro.isRunning,
+                startedAt: pomodoro.phaseStartedAt
+            )
         )
 
         let extensionActivities = extensionRegistry.closedActivities(context: .init(
@@ -107,6 +116,7 @@ struct ContentView: View {
             isHovering: isHovering,
             gestureProgress: gestureProgress,
             hideOnClosed: vm.hideOnClosed,
+            showSalaryCalculator: Defaults[.salaryCalculatorEnabled],
             showIdleFace: showNotHumanFace,
             musicLiveActivityEnabled: coordinator.musicLiveActivityEnabled,
             musicPlayerIdle: musicManager.isPlayerIdle,
@@ -214,6 +224,13 @@ struct ContentView: View {
                     .onChange(of: codexNotifications.expandedPermissionNotificationID) { _, notificationID in
                         guard isPresentingCodexPermission, notificationID == nil else { return }
                         collapseCodexPermission()
+                    }
+                    .onChange(of: pomodoro.pendingPrompt?.id) { _, promptID in
+                        guard promptID != nil else { return }
+                        coordinator.currentView = .pomodoro
+                        withAnimation(animationSpring) {
+                            _ = vm.open()
+                        }
                     }
                     .onChange(of: vm.isBatteryPopoverActive) {
                         if !vm.isBatteryPopoverActive && !isHovering && vm.notchState == .open && !SharingStateManager.shared.preventNotchClose {

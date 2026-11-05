@@ -14,10 +14,33 @@ struct ClosedNotchExtensionActivity {
     let priority: ClosedNotchPresentationPriority
     let updatedAt: Date
     let metrics: ClosedNotchLayoutMetrics
+    let isIdleWidget: Bool
     let content: AnyView
     let opensNotchOnHover: Bool
     let opensNotchOnTap: Bool
     let onSelect: (() -> Void)?
+
+    init(
+        id: String,
+        priority: ClosedNotchPresentationPriority,
+        updatedAt: Date,
+        metrics: ClosedNotchLayoutMetrics,
+        isIdleWidget: Bool = false,
+        content: AnyView,
+        opensNotchOnHover: Bool,
+        opensNotchOnTap: Bool,
+        onSelect: (() -> Void)?
+    ) {
+        self.id = id
+        self.priority = priority
+        self.updatedAt = updatedAt
+        self.metrics = metrics
+        self.isIdleWidget = isIdleWidget
+        self.content = content
+        self.opensNotchOnHover = opensNotchOnHover
+        self.opensNotchOnTap = opensNotchOnTap
+        self.onSelect = onSelect
+    }
 }
 
 struct NotchExtensionDescriptor {

@@ -695,7 +695,7 @@ final class CodexNotificationsCoreTests: XCTestCase {
         XCTAssertEqual(notice.status, .succeeded)
     }
 
-    func testUserPromptPresentsRunningNotificationImmediately() throws {
+    func testPostToolUsePresentsRunningNotificationAfterPromptContext() throws {
         var state = CodexNotificationState()
         let startedAt = Date(timeIntervalSince1970: 10)
 
@@ -704,6 +704,16 @@ final class CodexNotificationsCoreTests: XCTestCase {
             turnID: "turn-1",
             cwd: "/tmp/boring.notch",
             prompt: "Wire task progress into the notch",
+            chatTitle: "Progress UI",
+            projectName: "Boring Notch"
+        ), at: startedAt)
+
+        XCTAssertNil(state.visibleNotification())
+
+        state.reduce(.toolCompleted(
+            sessionID: "running-session",
+            turnID: "turn-1",
+            cwd: "/tmp/boring.notch",
             chatTitle: "Progress UI",
             projectName: "Boring Notch"
         ), at: startedAt)
@@ -726,6 +736,12 @@ final class CodexNotificationsCoreTests: XCTestCase {
             turnID: "turn-1",
             cwd: "/tmp/boring.notch",
             prompt: "Run tests"
+        ), at: Date(timeIntervalSince1970: 10))
+
+        state.reduce(.toolCompleted(
+            sessionID: "running-session",
+            turnID: "turn-1",
+            cwd: "/tmp/boring.notch"
         ), at: Date(timeIntervalSince1970: 10))
 
         XCTAssertEqual(state.visibleNotification()?.status, .running)
@@ -753,6 +769,12 @@ final class CodexNotificationsCoreTests: XCTestCase {
             prompt: "Run a long OpenCode task"
         ), at: Date(timeIntervalSince1970: 10))
 
+        state.reduce(.toolCompleted(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch"
+        ), at: Date(timeIntervalSince1970: 10))
+
         let first = try XCTUnwrap(state.visibleNotification())
         state.dismiss(first.id)
 
@@ -761,6 +783,12 @@ final class CodexNotificationsCoreTests: XCTestCase {
             turnID: nil,
             cwd: "/tmp/boring.notch",
             prompt: "Run a long OpenCode task"
+        ), at: Date(timeIntervalSince1970: 20))
+
+        state.reduce(.toolCompleted(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch"
         ), at: Date(timeIntervalSince1970: 20))
 
         XCTAssertNil(state.visibleNotification())
@@ -782,6 +810,12 @@ final class CodexNotificationsCoreTests: XCTestCase {
             turnID: nil,
             cwd: "/tmp/boring.notch",
             prompt: "Run another OpenCode task"
+        ), at: Date(timeIntervalSince1970: 40))
+
+        state.reduce(.toolCompleted(
+            sessionID: "running-session",
+            turnID: nil,
+            cwd: "/tmp/boring.notch"
         ), at: Date(timeIntervalSince1970: 40))
 
         XCTAssertEqual(state.visibleNotification()?.status, .running)

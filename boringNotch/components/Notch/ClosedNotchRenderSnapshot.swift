@@ -20,6 +20,16 @@ struct ClosedNotchRenderData {
     let music: ClosedNotchMusicRenderData
     let battery: ClosedNotchBatteryRenderData
     let osd: Binding<sneakPeek>
+    let pomodoro: ClosedNotchPomodoroRenderData
+}
+
+struct ClosedNotchPomodoroRenderData {
+    let icon: String
+    let secondsRemaining: Int
+    let totalSeconds: Int
+    let isBreak: Bool
+    let isRunning: Bool
+    let startedAt: Date
 }
 
 struct ClosedNotchSnapshotContext {
@@ -29,6 +39,7 @@ struct ClosedNotchSnapshotContext {
     let isHovering: Bool
     let gestureProgress: CGFloat
     let hideOnClosed: Bool
+    let showSalaryCalculator: Bool
     let showIdleFace: Bool
     let musicLiveActivityEnabled: Bool
     let musicPlayerIdle: Bool
@@ -67,6 +78,8 @@ struct ClosedNotchRenderSnapshot {
             }
         }
         let extensionActivities = Array(extensionActivitiesByID.values)
+        let idleExtensionActivities = extensionActivities.filter(\.isIdleWidget)
+        let regularExtensionActivities = extensionActivities.filter { !$0.isIdleWidget }
 
         let cornerScale: CGFloat? = context.cornerRadiusScalingEnabled
             && context.displayHeight > 0
@@ -89,11 +102,28 @@ struct ClosedNotchRenderSnapshot {
             && (context.renderData.music.isPlaying || !context.musicPlayerIdle)
             && context.musicLiveActivityEnabled
             && !context.hideOnClosed
+        let salaryCalculatorVisible = !context.expandingViewVisible
+            && context.showSalaryCalculator
+            && !context.hideOnClosed
+        let pomodoroVisible = !context.expandingViewVisible
+            && context.renderData.pomodoro.isRunning
+            && !context.hideOnClosed
         let idleFaceVisible = !context.expandingViewVisible
             && !context.renderData.music.isPlaying
             && context.musicPlayerIdle
             && context.showIdleFace
             && !context.hideOnClosed
+        let idleWidgets = Self.idleWidgets(
+            salaryCalculatorVisible: salaryCalculatorVisible,
+            pomodoroVisible: pomodoroVisible,
+            pomodoroStartedAt: context.renderData.pomodoro.startedAt,
+            extensionActivities: idleExtensionActivities
+        )
+        let idleWidgetsWidth = Self.idleWidgetsWidth(
+            idleWidgets.map(\.widget),
+            closedNotchWidth: context.closedNotchWidth,
+            extensionActivities: extensionActivitiesByID
+        )
 
         let supplemental: ClosedNotchSupplementalPresentation?
         if context.sneakPeekVisible,
@@ -126,13 +156,16 @@ struct ClosedNotchRenderSnapshot {
             batteryLeadingWidth: batteryNotificationVisible
                 ? context.renderData.battery.leadingWidth
                 : 0,
+            idleWidgets: idleWidgets.map(\.widget),
+            idleWidgetsWidth: idleWidgetsWidth,
             candidates: [
                 .init(.batteryNotification, isVisible: batteryNotificationVisible),
                 .init(.inlineOSD, isVisible: inlineOSDVisible),
                 .init(.music, isVisible: musicVisible),
-                .init(.idleFace, isVisible: idleFaceVisible),
+                .init(.idleWidgets, isVisible: !idleWidgets.isEmpty),
+                .init(.idleFace, isVisible: idleWidgets.isEmpty && idleFaceVisible),
                 .init(.idle, isVisible: true)
-            ] + extensionActivities.map { activity in
+            ] + regularExtensionActivities.map { activity in
                 .init(
                     .extensionActivity(activity.id),
                     isVisible: true,
@@ -152,6 +185,69 @@ struct ClosedNotchRenderSnapshot {
         self.albumArtWidth = albumArtWidth
         self.spectrumWidth = spectrumWidth
         self.extensionActivities = extensionActivitiesByID
+    }
+
+    private static func idleWidgets(
+        salaryCalculatorVisible: Bool,
+        pomodoroVisible: Bool,
+        pomodoroStartedAt: Date,
+        extensionActivities: [ClosedNotchExtensionActivity]
+    ) -> [(widget: ClosedNotchIdleWidget, updatedAt: Date)] {
+        var widgets: [(widget: ClosedNotchIdleWidget, updatedAt: Date, order: Int)] = []
+        var order = 0
+
+        if salaryCalculatorVisible {
+            widgets.append((.salaryCalculator, .distantPast, order))
+            order += 1
+        }
+
+        for activity in extensionActivities.sorted(by: { $0.updatedAt < $1.updatedAt }) {
+            widgets.append((.extensionActivity(activity.id), activity.updatedAt, order))
+            order += 1
+        }
+
+        if pomodoroVisible {
+            widgets.append((.pomodoroTimer, pomodoroStartedAt, order))
+        }
+
+        return widgets
+            .sorted {
+                if $0.updatedAt != $1.updatedAt {
+                    return $0.updatedAt < $1.updatedAt
+                }
+                return $0.order < $1.order
+            }
+            .map { (widget: $0.widget, updatedAt: $0.updatedAt) }
+    }
+
+    private static func idleWidgetsWidth(
+        _ widgets: [ClosedNotchIdleWidget],
+        closedNotchWidth: CGFloat,
+        extensionActivities: [String: ClosedNotchExtensionActivity]
+    ) -> CGFloat {
+        guard !widgets.isEmpty else { return closedNotchWidth }
+
+        let contentWidth = widgets.reduce(CGFloat.zero) { width, widget in
+            width + idleWidgetWidth(widget, extensionActivities: extensionActivities)
+        }
+        let spacing = CGFloat(max(0, widgets.count - 1)) * 4
+        let horizontalPadding: CGFloat = 12
+
+        return max(closedNotchWidth, contentWidth + spacing + horizontalPadding)
+    }
+
+    private static func idleWidgetWidth(
+        _ widget: ClosedNotchIdleWidget,
+        extensionActivities: [String: ClosedNotchExtensionActivity]
+    ) -> CGFloat {
+        switch widget {
+        case .salaryCalculator:
+            return 76
+        case .pomodoroTimer:
+            return 88
+        case .extensionActivity(let id):
+            return max(20, extensionActivities[id]?.metrics.totalWidth ?? 22)
+        }
     }
 
     var topCornerRadius: CGFloat {

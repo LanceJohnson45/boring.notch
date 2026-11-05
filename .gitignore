@@ -38,6 +38,9 @@ build/
 *.log
 
 # Other
+.env
+.env.*
+!.env.example
 *.DS_Store
 *.vscode/
 *.idea/

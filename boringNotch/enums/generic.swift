@@ -22,6 +22,7 @@ public enum NotchViews: Hashable {
     case home
     case shelf
     case agent
+    case pomodoro
 }
 
 enum AgentIdlePriority: String, CaseIterable, Identifiable, Defaults.Serializable {

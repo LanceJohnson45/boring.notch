@@ -4,6 +4,9 @@ enum ClosedNotchPresentation: Equatable {
     case batteryNotification
     case inlineOSD
     case music
+    case idleWidgets
+    case pomodoroTimer
+    case salaryCalculator
     case idleFace
     case extensionActivity(String)
     case idle
@@ -13,6 +16,9 @@ enum ClosedNotchPresentation: Equatable {
         case .batteryNotification: .critical
         case .inlineOSD: .system
         case .music: .activity
+        case .idleWidgets: .ambient
+        case .pomodoroTimer: .activity
+        case .salaryCalculator: .ambient
         case .idleFace: .ambient
         case .extensionActivity: .activity
         case .idle: .idle
@@ -88,6 +94,8 @@ struct ClosedNotchPresentationInput: Equatable {
     let expandedMusicCenterWidth: CGFloat
     let idleFaceTrailingWidth: CGFloat
     let batteryLeadingWidth: CGFloat
+    let idleWidgets: [ClosedNotchIdleWidget]
+    let idleWidgetsWidth: CGFloat
     let candidates: [ClosedNotchPresentationCandidate]
     let musicExpanded: Bool
     let supplemental: ClosedNotchSupplementalPresentation?
@@ -98,6 +106,13 @@ struct ClosedNotchPresentationState: Equatable {
     let supplemental: ClosedNotchSupplementalPresentation?
     let musicExpanded: Bool
     let metrics: ClosedNotchLayoutMetrics
+    let idleWidgets: [ClosedNotchIdleWidget]
+}
+
+enum ClosedNotchIdleWidget: Equatable {
+    case salaryCalculator
+    case pomodoroTimer
+    case extensionActivity(String)
 }
 
 enum ClosedNotchPresentationResolver {
@@ -116,7 +131,8 @@ enum ClosedNotchPresentationResolver {
                 primary: primary,
                 supplemental: nil,
                 musicExpanded: false,
-                metrics: metrics
+                metrics: metrics,
+                idleWidgets: []
             )
         }
 
@@ -164,6 +180,22 @@ enum ClosedNotchPresentationResolver {
                 )
             }
 
+        case .idleWidgets:
+            let extraWidth = max(0, input.idleWidgetsWidth - input.closedNotchWidth)
+            layout = (
+                floor(extraWidth / 2),
+                ceil(extraWidth / 2),
+                0,
+                0,
+                cornerRadiusInsets.closed.bottom
+            )
+
+        case .salaryCalculator:
+            layout = (0, 0, 0, 0, cornerRadiusInsets.closed.bottom)
+
+        case .pomodoroTimer:
+            layout = (0, 0, 0, 0, cornerRadiusInsets.closed.bottom)
+
         case .idleFace:
             layout = (
                 0,
@@ -202,7 +234,8 @@ enum ClosedNotchPresentationResolver {
                 trailingExclusionMargin: layout.trailingMargin,
                 horizontalChromeInset: layout.chromeInset,
                 height: resolvedHeight
-            )
+            ),
+            idleWidgets: primary == .idleWidgets ? input.idleWidgets : []
         )
     }
 }

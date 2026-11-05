@@ -99,6 +99,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationWillTerminate(_ notification: Notification) {
         // Flush debounced shelf persistence to avoid losing recent changes
         ShelfStateViewModel.shared.flushSync()
+        PomodoroManager.shared.flushPersistence()
+        UserDefaults.standard.synchronize()
 
         NotificationCenter.default.removeObserver(self)
         if let observer = screenLockedObserver {
@@ -638,12 +640,16 @@ class AppDelegate: NSObject, NSApplicationDelegate {
                     step: step,
                     updater: SoftwareUpdateStore.updater,
                     onFinish: {
+                        BoringViewCoordinator.shared.firstLaunch = false
+                        UserDefaults.standard.synchronize()
                         window.orderOut(nil)
 //                        NSApp.setActivationPolicy(.accessory)
                         window.close()
                         NSApp.deactivate()
                     },
                     onOpenSettings: {
+                        BoringViewCoordinator.shared.firstLaunch = false
+                        UserDefaults.standard.synchronize()
                         window.close()
                         SettingsWindowController.shared.showWindow()
                     }

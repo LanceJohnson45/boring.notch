@@ -782,22 +782,6 @@ public struct CodexNotificationState: Equatable, Sendable {
                     ?? CodexText.short(userInstruction, limit: 84),
                 projectName: projectName ?? Self.projectName(cwd: cwd)
             ), for: sessionID)
-            let notification = makeNotification(
-                sessionID: sessionID,
-                turnID: turnID,
-                requestID: nil,
-                cwd: cwd,
-                result: "Working on your request.",
-                status: .running,
-                chatTitle: chatTitle,
-                projectName: projectName,
-                date: date
-            )
-            guard !presentedRunningNotificationIDs.contains(notification.id) else {
-                return
-            }
-            upsert(notification)
-            markRunningNotificationPresented(notification.id)
 
         case .permissionRequest(
             let sessionID,
@@ -826,10 +810,31 @@ public struct CodexNotificationState: Equatable, Sendable {
             )
             upsert(notification)
 
-        case .toolCompleted:
+        case .toolCompleted(
+            let sessionID,
+            let turnID,
+            let cwd,
+            let chatTitle,
+            let projectName
+        ):
             // PermissionRequest and PostToolUse do not share a reliable request ID.
             // Keep live approvals until an explicit decision, terminal event, or expiry.
-            break
+            let notification = makeNotification(
+                sessionID: sessionID,
+                turnID: turnID,
+                requestID: nil,
+                cwd: cwd,
+                result: "Working on your request.",
+                status: .running,
+                chatTitle: chatTitle,
+                projectName: projectName,
+                date: date
+            )
+            guard !presentedRunningNotificationIDs.contains(notification.id) else {
+                return
+            }
+            upsert(notification)
+            markRunningNotificationPresented(notification.id)
 
         case .stop(
             let sessionID,

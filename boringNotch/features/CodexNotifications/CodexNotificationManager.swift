@@ -326,6 +326,14 @@ final class CodexNotificationManager: ObservableObject {
         }
 
         passivePresentationSurfaces.setHovered(isHovered, surfaceID: surfaceID)
+        guard notification.status.allowsPassiveHoverPause else {
+            schedulePassiveDismissal(
+                for: token,
+                after: CodexNotificationTiming.passiveDwellDuration
+            )
+            return
+        }
+
         if passivePresentationSurfaces.isPassiveDismissalPaused {
             passivePresentationTask?.cancel()
             passivePresentationTask = nil
@@ -349,7 +357,8 @@ final class CodexNotificationManager: ObservableObject {
         }
 
         passivePresentationSurfaces.end(surfaceID: surfaceID)
-        guard !passivePresentationSurfaces.isPassiveDismissalPaused else {
+        guard !notification.status.allowsPassiveHoverPause
+                || !passivePresentationSurfaces.isPassiveDismissalPaused else {
             passivePresentationTask?.cancel()
             passivePresentationTask = nil
             return
@@ -533,6 +542,12 @@ final class CodexNotificationManager: ObservableObject {
         agentTasks.first(where: { $0.status == .running })
     }
 
+    var runningAgentTasks: [AgentTaskRecord] {
+        agentTasks
+            .filter { $0.status == .running }
+            .sorted { $0.updatedAt < $1.updatedAt }
+    }
+
     private func upsertAgentTask(_ task: AgentTaskRecord) {
         ignoredAgentTaskIDs.remove(task.id)
         agentTasks.removeAll { $0.id == task.id }
@@ -644,6 +659,17 @@ final class CodexNotificationManager: ObservableObject {
             self.clearExpandedPermissionIfNeeded()
             self.synchronizePresentedNotification()
             self.schedulePermissionExpiration()
+        }
+    }
+}
+
+private extension CodexJobStatus {
+    var allowsPassiveHoverPause: Bool {
+        switch self {
+        case .succeeded:
+            false
+        case .needsAction, .running, .failed:
+            true
         }
     }
 }

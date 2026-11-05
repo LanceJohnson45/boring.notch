@@ -252,6 +252,24 @@ extension Defaults.Keys {
         default: .low
     )
     static let hideCompletedReminders = Key<Bool>("hideCompletedReminders", default: true)
+    static let salaryCalculatorEnabled = Key<Bool>("salaryCalculatorEnabled", default: true)
+    static let monthlySalary = Key<Double>("monthlySalary", default: 0)
+    static let monthlyWorkdays = Key<Double>("monthlyWorkdays", default: 21.75)
+    static let workdayStartMinute = Key<Int>("workdayStartMinute", default: 9 * 60)
+    static let workdayEndMinute = Key<Int>("workdayEndMinute", default: 18 * 60)
+    static let pomodoroFocusMinutes = Key<Int>("pomodoroFocusMinutes", default: 25)
+    static let pomodoroShortBreakMinutes = Key<Int>("pomodoroShortBreakMinutes", default: 10)
+    static let pomodoroLongBreakMinutes = Key<Int>("pomodoroLongBreakMinutes", default: 20)
+    static let pomodoroDailyTarget = Key<Int>("pomodoroDailyTarget", default: 8)
+    static let pomodoroCompletedToday = Key<Int>("pomodoroCompletedToday", default: 0)
+    static let pomodoroCompletedDate = Key<String>("pomodoroCompletedDate", default: "")
+    static let pomodoroCacheDate = Key<String>("pomodoroCacheDate", default: "")
+    static let pomodoroCachedPhase = Key<String>("pomodoroCachedPhase", default: "")
+    static let pomodoroCachedSecondsRemaining = Key<Int>("pomodoroCachedSecondsRemaining", default: 0)
+    static let pomodoroCachedIsRunning = Key<Bool>("pomodoroCachedIsRunning", default: false)
+    static let pomodoroCachedPhaseStartedAt = Key<Double>("pomodoroCachedPhaseStartedAt", default: 0)
+    static let pomodoroCachedSavedAt = Key<Double>("pomodoroCachedSavedAt", default: 0)
+    static let pomodoroCachedPendingNextPhase = Key<String>("pomodoroCachedPendingNextPhase", default: "")
     static let sliderColor = Key<SliderColorEnum>(
         "sliderUseAlbumArtColor",
         default: SliderColorEnum.white

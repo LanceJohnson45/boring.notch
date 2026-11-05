@@ -7,6 +7,7 @@
 	objects = {
 
 /* Begin PBXBuildFile section */
+        E80000012F00000100000001 /* PomodoroPush.swift in Sources */ = {isa = PBXBuildFile; fileRef = E80000022F00000100000002 /* PomodoroPush.swift */; };
 		D00000012F00000100000001 /* NotchExtensionRegistry.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00001012F00000100000001 /* NotchExtensionRegistry.swift */; };
 		D00000022F00000100000002 /* CodexNotificationsCore.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00001022F00000100000002 /* CodexNotificationsCore.swift */; };
 		D00000032F00000100000003 /* CodexNotificationManager.swift in Sources */ = {isa = PBXBuildFile; fileRef = D00001032F00000100000003 /* CodexNotificationManager.swift */; };
@@ -210,6 +211,7 @@
 /* End PBXCopyFilesBuildPhase section */
 
 /* Begin PBXFileReference section */
+        E80000022F00000100000002 /* PomodoroPush.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = features/Pomodoro/PomodoroPush.swift; sourceTree = "<group>"; };
 		D00001012F00000100000001 /* NotchExtensionRegistry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = extensions/NotchExtensionRegistry.swift; sourceTree = "<group>"; };
 		D00001022F00000100000002 /* CodexNotificationsCore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = features/CodexNotifications/Core/CodexNotificationsCore.swift; sourceTree = "<group>"; };
 		D00001032F00000100000003 /* CodexNotificationManager.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = features/CodexNotifications/CodexNotificationManager.swift; sourceTree = "<group>"; };
@@ -685,6 +687,7 @@
 		14CEF4142C5CAED300855D72 /* boringNotch */ = {
 			isa = PBXGroup;
 			children = (
+                E80000022F00000100000002 /* PomodoroPush.swift */,
 				D00001012F00000100000001 /* NotchExtensionRegistry.swift */,
 				D00001022F00000100000002 /* CodexNotificationsCore.swift */,
 				D00001032F00000100000003 /* CodexNotificationManager.swift */,
@@ -1032,6 +1035,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+                E80000012F00000100000001 /* PomodoroPush.swift in Sources */,
 				D00000012F00000100000001 /* NotchExtensionRegistry.swift in Sources */,
 				D00000022F00000100000002 /* CodexNotificationsCore.swift in Sources */,
 				D00000032F00000100000003 /* CodexNotificationManager.swift in Sources */,

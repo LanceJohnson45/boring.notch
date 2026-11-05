@@ -86,12 +86,29 @@ struct ClosedNotchRenderer: View {
                 )
             }
 
+        case .idleWidgets:
+            ClosedIdleWidgetsView(
+                metrics: state.metrics,
+                widgets: state.idleWidgets,
+                renderData: renderData,
+                extensionActivities: snapshot.extensionActivities
+            )
+
         case .idleFace:
             ClosedNotchLayout(metrics: state.metrics) {
                 EmptyView()
             } trailing: {
                 IdleNotchFaceView(displayClosedNotchHeight: snapshot.displayHeight)
             }
+
+        case .salaryCalculator:
+            SalaryIdleCounterView(metrics: state.metrics)
+
+        case .pomodoroTimer:
+            PomodoroClosedTimerView(
+                metrics: state.metrics,
+                data: renderData.pomodoro
+            )
 
         case .extensionActivity(let id):
             if let activity = snapshot.extensionActivities[id] {
